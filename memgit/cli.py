@@ -724,6 +724,40 @@ def serve(store, use_http, port):
         run_server(store_path)
 
 
+# ── daemon ────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def daemon():
+    """Manage the memgit HTTP daemon (used by VS Code extension and IDE plugins)."""
+    pass
+
+
+@daemon.command('start')
+@click.option('--port', default=7474, show_default=True, help='Port to listen on')
+@click.option('--store', default=None, help='Path to memgit store dir')
+def daemon_start(port, store):
+    """Start the memgit HTTP daemon."""
+    store_path = Path(store).resolve() if store else None
+    from .http_server import run_http_server
+    run_http_server(port=port, store_path=store_path)
+
+
+@daemon.command('status')
+@click.option('--port', default=7474, show_default=True, help='Daemon port to check')
+def daemon_status(port):
+    """Check whether the memgit daemon is running."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}/status', timeout=2) as r:
+            import json
+            data = json.loads(r.read())
+            console.print(f'[green]online[/green] — memgit {data.get("version","?")} · '
+                          f'{data.get("memory_count", 0)} memories · port {port}')
+    except Exception:
+        console.print(f'[red]offline[/red] — daemon not reachable on port {port}')
+        console.print('[dim]Run `memgit daemon start` to start it.[/dim]')
+
+
 # ── stats ─────────────────────────────────────────────────────────────────────
 
 @cli.command()

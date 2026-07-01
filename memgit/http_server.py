@@ -94,6 +94,17 @@ class MemgitHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         qs = parse_qs(parsed.query)
 
+        if path == "/status":
+            repo = _load_repo(self.store_path)
+            self._json_response({
+                "status": "ok",
+                "version": "0.1.2",
+                "store": str(self.store_path or _default_store()),
+                "initialized": repo is not None,
+                "memory_count": len(repo.list()) if repo else 0,
+            })
+            return
+
         if path in ("/", "/openapi.json"):
             spec = dict(self.openapi_spec)
             spec["servers"] = [{"url": f"http://localhost:{self.server.server_address[1]}"}]

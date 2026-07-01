@@ -1,0 +1,213 @@
+{
+  "name": "memgit",
+  "displayName": "memgit — AI Memory Version Control",
+  "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
+  "version": "0.1.2",
+  "publisher": "memgit",
+  "icon": "assets/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/code4161/memgit.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Other"],
+  "keywords": ["ai", "memory", "claude", "cursor", "copilot", "context", "memgit"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "memgit.showLog",
+        "title": "memgit: Show Memory History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "memgit.searchMemory",
+        "title": "memgit: Search Memories",
+        "icon": "$(search)"
+      },
+      {
+        "command": "memgit.saveMemory",
+        "title": "memgit: Save Memory",
+        "icon": "$(add)"
+      },
+      {
+        "command": "memgit.refresh",
+        "title": "memgit: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "memgit.injectToCursorRules",
+        "title": "memgit: Inject into .cursorrules / .windsurfrules"
+      },
+      {
+        "command": "memgit.viewMemory",
+        "title": "memgit: View Memory",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "memgit.deleteMemory",
+        "title": "memgit: Forget Memory",
+        "icon": "$(trash)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "memgit",
+          "title": "AI Memory",
+          "icon": "$(database)"
+        }
+      ]
+    },
+    "views": {
+      "memgit": [
+        {
+          "id": "memgitExplorer",
+          "name": "Memories",
+          "when": "true"
+        },
+        {
+          "id": "memgitLog",
+          "name": "History",
+          "when": "true"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "memgit.refresh",
+          "when": "view == memgitExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "memgit.saveMemory",
+          "when": "view == memgitExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "memgit.searchMemory",
+          "when": "view == memgitExplorer",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "memgit.viewMemory",
+          "when": "viewItem == memory",
+          "group": "inline"
+        },
+        {
+          "command": "memgit.deleteMemory",
+          "when": "viewItem == memory",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "memgit",
+      "properties": {
+        "memgit.daemonPort": {
+          "type": "number",
+          "default": 7474,
+          "description": "Port where the memgit HTTP daemon is running."
+        },
+        "memgit.autoRefreshInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "How often (seconds) to refresh the memory explorer. Set to 0 to disable."
+        },
+        "memgit.injectOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically inject memories into .cursorrules / .windsurfrules on activation."
+        }
+      }
+    },
+    "languageModelTools": [
+      {
+        "name": "memgit_write",
+        "tags": ["memgit", "memory"],
+        "toolReferenceName": "memgit-write",
+        "displayName": "Save Memory",
+        "modelDescription": "Save or update an AI memory in memgit. Call this to persist important facts, rules, or project context for future sessions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Unique kebab-case identifier for this memory (e.g. 'auth-pattern')"
+            },
+            "rule": {
+              "type": "string",
+              "description": "The memory content — a concise rule, fact, or insight"
+            },
+            "priority": {
+              "type": "number",
+              "description": "Priority 1 (low) to 3 (critical, always injected). Default: 2",
+              "default": 2
+            }
+          },
+          "required": ["slug", "rule"]
+        }
+      },
+      {
+        "name": "memgit_query",
+        "tags": ["memgit", "memory"],
+        "toolReferenceName": "memgit-query",
+        "displayName": "Search Memories",
+        "modelDescription": "Search stored AI memories by keyword. Use when you want to recall facts about this project or user that may not be in the current context.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Keywords to search for"
+            },
+            "limit": {
+              "type": "number",
+              "default": 5,
+              "description": "Max results to return"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "memgit_forget",
+        "tags": ["memgit", "memory"],
+        "toolReferenceName": "memgit-forget",
+        "displayName": "Forget Memory",
+        "modelDescription": "Mark a memory as superseded so it is no longer injected into future sessions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the memory to forget"
+            }
+          },
+          "required": ["slug"]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "dev": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "compile": "tsc --noEmit",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.26.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
