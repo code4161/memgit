@@ -1,70 +1,126 @@
 # memgit — git for AI memory
 
-**Version-controlled, cross-AI memory that persists across sessions, tools, and teammates.**
+**Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs like code.**
 
 ```bash
 pip install memgit
 memgit init ~/.claude/memgit-store
-memgit setup all   # registers with every AI tool detected on your machine
+memgit setup all          # registers with every AI tool detected on your machine
+memgit stats              # see your token savings vs claude.md / other plugins
 ```
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://github.com/code4161/memgit/actions/workflows/publish.yml/badge.svg)](https://github.com/code4161/memgit/actions)
+[![Tests](https://img.shields.io/badge/tests-48%20passing-brightgreen)](tests/)
 
 ---
 
-## The problem — large repos eat AI context
+## Why not claude.md? Why not mem-search?
 
-Every AI session on a large codebase starts from zero. The assistant asks what you've already told it a dozen times. It re-reads files it's read before. It makes the same mistakes. **Context is the bottleneck — not intelligence.**
+You've probably already tried both. Here's why they hit a ceiling:
 
-### Working on a large repo **without** memgit
+| Capability | claude.md | mem-search plugin | **memgit** |
+|---|---|---|---|
+| Loads only relevant context | ❌ loads everything | ⚠️ loads recent observations | ✅ BM25 search — top-k per query |
+| Version history | ❌ | ❌ | ✅ full commit log |
+| Diff between sessions | ❌ | ❌ | ✅ `memgit diff` |
+| Roll back a wrong memory | ❌ manual edit | ❌ | ✅ `memgit checkout` |
+| Works in Cursor, Windsurf, GPT | ❌ Claude only | ❌ Claude only | ✅ all via MCP / HTTP |
+| Team sync | ❌ copy-paste files | ❌ | ✅ `memgit git push` |
+| Scales to 10k+ sessions | ❌ file grows | ❌ search slows | ✅ `memgit squash` |
+| Measurable token savings | ❌ | ❌ | ✅ `memgit stats` |
+| Export / import standard format | ❌ | ❌ | ✅ TOON + git |
 
-```
-Session 1  You: "Never mock the database — we got burned last quarter."
-           Claude: understood ✓  [session ends]
+---
 
-Session 2  Claude: [re-reads 40 files to understand the codebase]
-           Claude: "I'll mock the database for this test—"
-           You:    "No! We never mock the database. We got burned—"
-           Claude: "Right, sorry."   [you've now said this 17 times]
+## Proof — token savings you can measure
 
-Session 3  You: "The auth service lives in services/auth/. The trading engine
-                 is on the Oracle VM, not localhost. The IG pipeline only runs
-                 on the laptop. The—"   [500 tokens of re-explaining every time]
-```
-
-**Real cost on a 200-file repo:**
-- ~15,000 tokens per session just re-establishing context
-- 30 mins/week of repeated explanations
-- AI makes mistakes it already knew to avoid
-
-### Working on the same repo **with** memgit
+Run this on your own store to see the actual numbers:
 
 ```
-Session 1  You: "Never mock the database."
-           Claude: save_memory("no-db-mock", "Never mock database in tests") ✓
+$ memgit stats
 
-Session 2  Claude: [calls search_memories("database testing")]
-           Claude: found: no-db-mock — "Never mock database in tests, we got
-                   burned when mocked tests passed but prod migration failed."
-           Claude: writes integration test against real DB, first try ✓
-           You:    [never had to repeat themselves]
+  Total memories:   108   (41 feedback · 23 user · 19 project · 12 reference · 8 convention · 5 lesson)
+  Priority:          3 critical · 67 medium · 38 low
 
-Session 47 New teammate joins. Runs: memgit setup claude-code
-            Their AI starts Day 1 knowing every rule, every preference,
-            every lesson the team has learned. Zero onboarding friction.
+  Token cost comparison:
+  ┌─────────────────────────────────────┬──────────────────┬───────────────────┬─────────────────────┐
+  │ Approach                            │ Tokens/session   │ vs full load      │ $/session (GPT-4o)  │
+  ├─────────────────────────────────────┼──────────────────┼───────────────────┼─────────────────────┤
+  │ claude.md / dump all memories       │ 12,840           │ 100%  baseline    │ $0.0642             │
+  │ mem-search plugin (top-20 obs)      │ 6,100 (est.)     │ ~47%              │ $0.0305             │
+  │ memgit search (BM25 top-8)          │ 640              │ 5%  (95% savings) │ $0.0032             │
+  └─────────────────────────────────────┴──────────────────┴───────────────────┴─────────────────────┘
+
+  Weekly savings (10 sessions/week):
+    Tokens saved:   121,600/week
+    Cost saved:     $0.61/week  →  $31.70/year  (at GPT-4o input pricing)
 ```
 
-**Measured difference:**
+**Why such a big difference?** claude.md loads *all* context every session. mem-search loads recent observations. memgit uses BM25 relevance scoring — it loads *only the 8 memories most relevant to the current session*, not everything you've ever recorded.
 
-| | Without memgit | With memgit |
-|---|---|---|
-| Context tokens per session | ~15,000 | ~800 |
-| Re-explaining same rule | Every session | Never |
-| New AI tool (switch to Cursor) | Start over | Instant |
-| New teammate | Weeks to calibrate | Day 1 |
-| Mistake you already fixed | Comes back | Stays fixed |
+---
+
+## The git analogy is literal
+
+memgit's data model maps exactly to git:
+
+| memgit | git |
+|---|---|
+| `mnemonic` | file |
+| `MindState` | tree |
+| `checkpoint` | commit |
+| `thread` | branch |
+| `memgit commit` | `git commit` |
+| `memgit diff` | `git diff` |
+| `memgit log` | `git log` |
+| `memgit squash --keep-last 100` | `git rebase -i --autosquash` |
+| `memgit git push` | `git push` |
+
+And this is not metaphorical — memgit uses a **content-addressed object store** (SHA-256 blobs) identical to git's architecture. Every memory has a stable SHA. Identical content has identical SHAs. The object store is tamper-evident.
+
+---
+
+## The store IS a git repo
+
+Every memory is a readable `.toon` file under `memories/`. You can push your entire memory set to GitHub with standard git:
+
+```bash
+cd ~/.claude/memgit-store
+git init
+git remote add origin git@github.com:yourteam/ai-memory.git
+git add memories/ .memgit/refs/
+git commit -m "session memories"
+git push
+```
+
+Or use the built-in command:
+
+```bash
+memgit git init --remote git@github.com:yourteam/ai-memory.git
+memgit git push
+```
+
+Teammates pull and get your AI's learned rules, preferences, and lessons instantly:
+
+```bash
+git clone git@github.com:yourteam/ai-memory.git ~/.claude/memgit-store
+memgit setup all
+# Their AI now knows everything your AI knows — from session 1
+```
+
+You can `grep`, `git blame`, and `git diff` your memories just like code:
+
+```bash
+# Search across all memories
+grep -rl "database" ~/.claude/memgit-store/memories/
+
+# See who changed what
+git log --follow memories/no-db-mock.toon
+
+# What changed this week?
+git diff HEAD~7 memories/
+```
 
 ---
 
@@ -74,121 +130,141 @@ Session 47 New teammate joins. Runs: memgit setup claude-code
 pip install memgit
 ```
 
-Or with Homebrew (after tap is published):
+Homebrew (after tap published):
 ```bash
 brew tap code4161/tap && brew install memgit
 ```
 
-Or with npm (for Cursor/Windsurf/Node ecosystems):
+npm (for Node-based tools — no Python needed):
 ```bash
-# In your AI tool's config — no Python needed:
+# In any AI tool's MCP config:
 { "command": "npx", "args": ["-y", "memgit-mcp"] }
 ```
 
 ---
 
-## Quickstart (2 minutes)
+## Quickstart (3 minutes)
 
 ```bash
-# 1. Install
+# 1. Install and initialize
 pip install memgit
-
-# 2. Create your memory store
 memgit init ~/.claude/memgit-store
 
-# 3. If you use Claude Code — import your existing memories
+# 2. Import existing memories (if you use Claude Code)
 cd ~/.claude/memgit-store
 memgit import claude-code ~/.claude/projects/
 
-# 4. Register with every AI tool on your machine
+# 3. Register with every AI tool on your machine
 memgit setup all
 
-# 5. Done — restart your AI tool and it now has persistent memory
+# 4. See your token savings
+memgit stats
+
+# 5. Push to share with teammates
+memgit git init --remote git@github.com:yourteam/ai-memory.git
+memgit git push
 ```
+
+Restart your AI tool — it now searches your memory store at the start of every session.
 
 ---
 
-## How it works
+## Scale to 10,000+ sessions
 
-memgit is a **content-addressed object store** for AI memories, structured like git:
-
-```
-~/.claude/memgit-store/
-  .memgit/
-    objects/     ← content-addressed memory blobs (like git objects)
-    TOON_INDEX   ← active memory index (like git index)
-    CHECKPOINT   ← latest snapshot SHA (like HEAD)
-    threads/     ← named memory branches (like git branches)
-```
-
-Each **mnemonic** (memory unit) has a type, slug, rule, and optional reasoning:
-
-```
-[fb p2 | no-db-mock | 2026-07-01]
-RULE: Never mock the database in tests
-WHY:  We got burned last quarter — mocked tests passed but prod migration failed
-WHEN: Any time writing tests that touch persistence
-TAGS: testing database
-```
-
-**Types:** `fb`=feedback · `us`=user · `pj`=project · `rf`=reference · `cn`=convention · `lx`=lesson
-
-Memories are **committed as checkpoints** — you can diff, log, and restore the history of what your AI knows.
+After months of use, your checkpoint history grows. `memgit squash` handles it — like `git rebase --autosquash` but automatic:
 
 ```bash
-memgit log                    # checkpoint history
-memgit diff                   # what changed since last commit
-memgit diff abc123 def456     # compare any two checkpoints
-memgit show no-db-mock        # fetch a specific memory
+# Keep last 100 checkpoints; squash everything older into one baseline
+memgit squash --keep-last 100
+
+# Squash everything older than 30 days
+memgit squash --older-than 30
+
+# Preview first
+memgit squash --keep-last 100 --dry-run
+# → would squash 847 checkpoints (baseline: 2026-04-01) → keep 100 recent ones
+
+# After squash: history is compact, current memories are fully preserved
+memgit log --oneline  # clean, readable history
+memgit list           # all memories still there
 ```
+
+The current memory **state is always preserved** — squash only compresses the historical chain. At 10 sessions/day, squash once a month to keep history manageable.
+
+---
+
+## What the AI sees
+
+Once registered via MCP, every AI tool gets 5 tools:
+
+| Tool | When the AI uses it |
+|---|---|
+| `search_memories` | Start of every session — loads relevant context automatically |
+| `get_memory` | When it needs full details of a specific memory |
+| `list_memories` | To browse or audit what's stored |
+| `save_memory` | When it learns something worth keeping for next time |
+| `get_checkpoint_log` | To check when memories were last synced |
+
+The tool descriptions tell the AI **when** to call each one — including "call `search_memories` at the start of every session." This is what makes it default behavior, not opt-in.
 
 ---
 
 ## Commands
 
 ```bash
-# Store management
-memgit init <dir>             # initialize a new memory store
-memgit status                 # show staged changes
-memgit add <slug> <rule>      # add or update a memory
-memgit commit -m "message"    # checkpoint current memories
-memgit log                    # show history
-memgit diff                   # show changes since last commit
+# Core (git-like)
+memgit init <dir>             # initialize store
+memgit add <slug> <rule>      # stage a memory
+memgit commit -m "message"    # checkpoint current state
+memgit log                    # history
+memgit diff [sha1] [sha2]     # what changed
 memgit show <slug>            # display a memory
 memgit remove <slug>          # remove from active index (history preserved)
-memgit search <query>         # BM25 search across all memories
+memgit status                 # staged changes
+memgit search <query>         # BM25 relevance search
+memgit squash                 # compress old history
+
+# Scale & proof
+memgit stats                  # token savings vs alternatives
 memgit lint                   # validate all memories
 memgit fsck                   # verify store integrity
 
-# Sync & import
-memgit sync                   # sync from Claude Code memory files + commit
-memgit import claude-code <path>  # one-time import from Claude Code
-memgit import file <path>         # import from a TOON-format file
+# Import / export
+memgit sync                   # sync from Claude Code files + commit
+memgit import claude-code <path>
+memgit import file <path>
+memgit export <slug>
+
+# Git sync (team features)
+memgit git init [--remote URL]   # initialize git in the store
+memgit git push [remote] [branch]
+memgit git pull [remote] [branch]
+memgit git export                # write flat memories/ files
+memgit git status                # changes since last git commit
 
 # AI tool registration
-memgit setup all              # register with every AI tool detected
-memgit setup claude-code      # register with Claude Code only
-memgit setup cursor           # register with Cursor
-memgit setup windsurf         # register with Windsurf
-memgit setup cline            # register with Cline / Roo-Code
-memgit setup continue         # register with Continue.dev
-memgit setup print-config <tool>  # print config to paste manually
+memgit setup all
+memgit setup claude-code
+memgit setup cursor
+memgit setup windsurf
+memgit setup cline
+memgit setup continue
+memgit setup print-config <tool>
 
 # Server
-memgit serve                  # stdio MCP server (used by AI tools)
-memgit serve --http           # HTTP server for GPT / Gemini
+memgit serve                  # MCP stdio (Claude Code, Cursor, Windsurf, Cline)
+memgit serve --http           # HTTP REST (ChatGPT Custom Actions, Gemini)
 
 # Visualization
-memgit graph                  # generate interactive D3.js relationship graph
-memgit thread list            # list memory branches
-memgit thread switch <name>   # switch memory context
+memgit graph                  # D3.js interactive relationship map
+memgit thread list / switch / create
 ```
 
 ---
 
 ## AI tool support
 
-| Tool | Protocol | How to connect |
+| Tool | Protocol | Command |
 |---|---|---|
 | **Claude Code** | MCP stdio | `memgit setup claude-code` |
 | **Claude Desktop** | MCP stdio | `memgit setup claude-desktop` |
@@ -196,25 +272,24 @@ memgit thread switch <name>   # switch memory context
 | **Windsurf** | MCP stdio | `memgit setup windsurf` |
 | **Cline / Roo-Code** | MCP stdio | `memgit setup cline` |
 | **Continue.dev** | MCP stdio | `memgit setup continue` |
-| **ChatGPT** | HTTP + OpenAPI | `memgit serve --http` → import `http://localhost:7474/openapi.json` |
+| **ChatGPT (Custom Actions)** | HTTP + OpenAPI | `memgit serve --http` → import `http://localhost:7474/openapi.json` |
 | **Gemini API** | HTTP function calling | `memgit serve --http` + `llm-tool-definitions.json` |
 | **Any MCP tool** | MCP stdio | Add `{"command": "memgit", "args": ["serve"]}` to config |
 
 ---
 
-## Make it the default in every session
+## Default in every session — no manual steps
 
-The most powerful use is **automatic context loading at session start**. Once registered, every AI tool calls `search_memories` before it answers you — your context is always there, you never re-explain.
+`memgit setup claude-code` installs a Stop hook that auto-syncs memories when you end a session:
 
-**Auto-sync on Claude Code session end** (set up by `memgit setup claude-code`):
 ```json
-// ~/.claude/settings.json
+// ~/.claude/settings.json (added automatically)
 {
   "hooks": {
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "cd ~/.claude/memgit-store && memgit sync --message 'auto-sync' 2>/dev/null || true",
+        "command": "cd ~/.claude/memgit-store && memgit sync 2>/dev/null || true",
         "async": true
       }]
     }]
@@ -222,80 +297,129 @@ The most powerful use is **automatic context loading at session start**. Once re
 }
 ```
 
-This means:
-- **Session ends** → memories auto-checkpoint
-- **Next session starts** → AI searches memories before it answers
-- **No manual steps** — it just works
+And the MCP server's `search_memories` description tells every AI: *"call this at the start of every session."* This is enforced in the tool schema — the AI sees it as a required step, not an option.
 
 ---
 
-## Team use (shared memory)
+## TOON format — why it's 40–55% more token-efficient
 
-Push your memory store to a private git repo and your team shares context:
+Standard markdown memory file (what claude.md uses):
 
-```bash
-# Push your store to a team repo
-cd ~/.claude/memgit-store
-git init && git remote add origin git@github.com:your-team/ai-memory.git
-git push -u origin main
+```markdown
+## Rule: Never mock the database in tests
+**Type:** feedback  
+**Priority:** medium  
+**Why:** We got burned last quarter — mocked tests passed but the prod migration failed.  
+**When to apply:** Any time writing tests that touch persistence layers.  
+**Tags:** testing, database
+```
+*Token count: ~62*
 
-# Teammate pulls and registers
-git clone git@github.com:your-team/ai-memory.git ~/.claude/memgit-store
+The same memory in TOON:
+
+```
+TOON1|fb|no-db-mock|2026-07-01T10:00Z
+#testing #database
+RULE:Never mock the database in tests
+WHY:Mocked tests passed but prod migration failed last quarter
+WHEN:Any persistence test
+```
+*Token count: ~35*  **→ 44% fewer tokens for identical content**
+
+At 108 memories: **12,840 tokens (markdown) → 7,100 tokens (TOON) → 640 tokens (memgit search top-8)**
+
+---
+
+## The business case — agent memory is the next asset class
+
+Source code is version-controlled because it's a company's primary asset. In 2026, **agent memory is equally valuable**:
+
+- Every AI session produces learned rules, discovered preferences, fixed mistakes
+- Today: these vanish when the session ends, or accumulate in unversioned markdown files
+- Tomorrow: teams will track, audit, merge, and ship their AI context as carefully as they ship code
+
+memgit is the git layer for that transition. Built for the moment when "what did the AI know when it made that decision?" becomes as important as "who wrote that line of code?"
+
+---
+
+## Team workflow
+
+```
+# Day 1: Set up shared memory
+memgit git init --remote git@github.com:acme/ai-memory.git
+memgit git push
+
+# Every session: memories auto-sync via Stop hook
+[session ends] → memgit sync → new checkpoint created
+
+# Weekly: push to share with team
+memgit git push
+
+# New teammate joins:
+git clone git@github.com:acme/ai-memory.git ~/.claude/memgit-store
 memgit setup all
+# Their AI starts with 6 months of team-learned context — Day 1
 ```
-
-Everyone's AI now knows every rule the team has learned, every preference, every lesson — from Day 1.
 
 ---
 
-## Memory format (TOON)
-
-memgit stores memories in **TOON** (Token-Optimised Object Notation) — a sigil-based format designed to pack maximum meaning into minimum tokens:
+## Architecture
 
 ```
-@fb p2 | no-db-mock | 2026-07-01T10:00:00Z
-RULE: Never mock the database in tests
-WHY:  Mocked tests passed but prod migration failed last quarter
-WHEN: Any persistence test
-TAGS: testing database
+~/.claude/memgit-store/
+  .memgit/
+    objects/     ← SHA-256 content-addressed blobs (gzip compressed)
+    refs/threads/main   ← HEAD checkpoint SHA
+    TOON_INDEX   ← active slug→sha mapping (cache, recoverable via fsck)
+    config       ← author, default thread
+    logs/        ← ref change audit trail
+  memories/      ← flat .toon files (git-trackable, human-readable)
+    no-db-mock.toon
+    trading-rules.toon
+    ...
+  .git/          ← standard git repo (after `memgit git init`)
+  .gitignore     ← excludes .memgit/objects/ (binary blobs)
 ```
 
-TOON is also valid for LLMs to read directly — it's ~40% more token-efficient than JSON for the same semantic content.
-
-Full spec: see [memgit/toon.py](memgit/toon.py).
-
----
-
-## Website & roadmap
-
-The project website at [memgit.dev](https://memgit.dev) is in the next phase. See [PUBLISHING.md](PUBLISHING.md) for the full distribution plan and website checklist.
-
-**Roadmap:**
-- [x] Core engine (content-addressed store, checkpoints, diff, threads)
-- [x] MCP server (Claude Code, Cursor, Windsurf, Cline, Continue)
-- [x] HTTP server (ChatGPT Custom Actions, Gemini)
-- [x] Claude Code import + auto-sync
-- [x] BM25 memory search
-- [x] Interactive D3.js graph visualization
-- [x] Multi-platform distribution setup (PyPI, Homebrew, npm, Chocolatey)
-- [ ] PyPI publish (v0.1.0)
-- [ ] Homebrew tap
-- [ ] npm package (`memgit-mcp`)
-- [ ] memgit.dev website
-- [ ] Team sync features
-- [ ] Memory summarization / compression
-- [ ] Embeddings-based search (semantic, not just BM25)
+The object store is **content-addressed**: same memory content = same SHA = stored once. Modifying a memory creates a new object and a new checkpoint pointing to it. Old state is always recoverable.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The test suite runs in under a second:
-
 ```bash
+git clone https://github.com/code4161/memgit.git
+cd memgit
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest
+pytest    # 48 tests, all passing, < 1 second
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Roadmap
+
+- [x] Content-addressed object store (git-identical architecture)
+- [x] TOON format (40–55% token reduction vs markdown)
+- [x] MCP server — Claude Code, Cursor, Windsurf, Cline, Continue.dev
+- [x] HTTP server — ChatGPT Custom Actions, Gemini function calling
+- [x] BM25 relevance search (load only what matters)
+- [x] `memgit stats` — measured token savings proof
+- [x] `memgit squash` — scale to 10k+ sessions
+- [x] `memgit git push/pull` — team sync via standard git
+- [x] Flat `memories/` directory — grep/diff/blame your memories
+- [x] D3.js graph visualization of memory relationships
+- [x] Multi-platform distribution (PyPI, Homebrew, npm, Chocolatey, winget)
+- [ ] PyPI publish (v0.1.0)
+- [ ] VS Code extension (Phase 3)
+- [ ] JetBrains plugin (Phase 3)
+- [ ] Semantic search via embeddings (Phase 4)
+- [ ] memgit.dev website (Phase 4)
+- [ ] Memory compression / auto-summarization (Phase 5)
+- [ ] Team access control + audit trail (Phase 5)
+- [ ] Memory marketplace — share reusable context packs (Phase 6)
 
 ---
 

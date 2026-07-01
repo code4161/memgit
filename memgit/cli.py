@@ -692,6 +692,311 @@ def serve(store, use_http, port):
         run_server(store_path)
 
 
+# ── stats ─────────────────────────────────────────────────────────────────────
+
+@cli.command()
+def stats():
+    """Show token-savings proof and store health metrics.
+
+    Compares loading ALL memories (the claude.md / dump approach) against
+    memgit's relevance-filtered search — and shows the real token and dollar
+    savings your team gets every session.
+    """
+    repo = _require_repo()
+    s = repo.stats()
+
+    if s.get('total', 0) == 0:
+        console.print('[yellow]No memories yet. Run `memgit sync` or `memgit add` first.[/yellow]')
+        return
+
+    type_labels = {'fb': 'feedback', 'us': 'user', 'pj': 'project',
+                   'rf': 'reference', 'cn': 'convention', 'lx': 'lesson'}
+
+    type_str = ' · '.join(
+        f"{s['by_type'].get(tc, 0)} {lbl}"
+        for tc, lbl in type_labels.items()
+        if s['by_type'].get(tc, 0) > 0
+    )
+
+    prio = s['priority_counts']
+    prio_str = f"{prio.get(3, 0)} critical · {prio.get(2, 0)} medium · {prio.get(1, 0)} low"
+
+    reduction = s['reduction_pct']
+    full_tok = s['full_tokens']
+    search_tok = s['avg_search_tokens']
+    crit_tok = s['critical_tokens']
+
+    weekly_tokens = s['weekly_savings_tokens']
+    weekly_usd = s['weekly_savings_usd']
+
+    ck_count = s['checkpoint_count']
+    first_ts = s['first_checkpoint_ts'].strftime('%Y-%m-%d') if s['first_checkpoint_ts'] else '—'
+    last_ts = s['last_checkpoint_ts'].strftime('%Y-%m-%d') if s['last_checkpoint_ts'] else '—'
+
+    # ── render ────────────────────────────────────────────────────────────────
+    from rich.rule import Rule
+    from rich.panel import Panel
+    from rich import box
+
+    console.print()
+    console.print(Rule('[bold cyan]memgit stats[/bold cyan]'))
+    console.print()
+
+    t = Table(show_header=False, box=None, padding=(0, 2))
+    t.add_column(style='dim', width=30)
+    t.add_column()
+
+    t.add_row('Total memories', f'[bold]{s["total"]}[/bold]   {type_str}')
+    t.add_row('Priority breakdown', prio_str)
+    t.add_row('Checkpoints', f'{ck_count}   {first_ts} → {last_ts}')
+    console.print(t)
+    console.print()
+
+    console.print('[bold]Token cost comparison[/bold]')
+    console.print()
+
+    bench = Table(box=box.SIMPLE, header_style='bold')
+    bench.add_column('Approach', style='', min_width=30)
+    bench.add_column('Tokens/session', justify='right')
+    bench.add_column('vs full load', justify='right')
+    bench.add_column('$/session (GPT-4o)', justify='right')
+
+    from .tokens import token_cost_usd
+    bench.add_row(
+        '[red]claude.md / dump all memories[/red]',
+        f'{full_tok:,}',
+        '100%  baseline',
+        f'${token_cost_usd(full_tok):.4f}',
+    )
+    bench.add_row(
+        '[yellow]mem-search plugin (top-20 obs)[/yellow]',
+        f'{min(full_tok, search_tok * 2):,}  [dim](est.)[/dim]',
+        f'~{min(100, round(100 * min(full_tok, search_tok * 2) / full_tok))}%',
+        f'${token_cost_usd(min(full_tok, search_tok * 2)):.4f}',
+    )
+    bench.add_row(
+        '[green]memgit search (BM25 top-8)[/green]',
+        f'{search_tok:,}',
+        f'[green]{100 - reduction}%  ({reduction}% savings)[/green]',
+        f'[green]${token_cost_usd(search_tok):.4f}[/green]',
+    )
+    if crit_tok > 0:
+        bench.add_row(
+            '[cyan]  + critical memories (always)[/cyan]',
+            f'+{crit_tok:,}  [dim](overhead)[/dim]',
+            '',
+            '',
+        )
+    console.print(bench)
+
+    console.print()
+    console.print('[bold]Weekly savings  [dim](10 sessions/week)[/dim][/bold]')
+    console.print()
+
+    savings = Table(box=None, show_header=False, padding=(0, 2))
+    savings.add_column(style='dim', width=30)
+    savings.add_column()
+
+    savings.add_row('Tokens saved/week', f'[green]{weekly_tokens:,}[/green]')
+    savings.add_row('Cost saved/week (GPT-4o)', f'[green]${weekly_usd:.4f}[/green]')
+    savings.add_row('', '')
+    savings.add_row('Annualised token savings', f'[bold green]{weekly_tokens * 52:,}[/bold green]')
+    savings.add_row('Annualised cost savings', f'[bold green]${weekly_usd * 52:.2f}[/bold green]')
+    console.print(savings)
+
+    console.print()
+    has_flat = (repo.path.parent / 'memories').exists()
+    has_git = (repo.path.parent / '.git').exists()
+    git_status = '[green]✓[/green]' if has_git else '[red]✗[/red] (run `memgit git init` to enable team sync)'
+    flat_status = '[green]✓[/green]' if has_flat else '[yellow]–[/yellow] (run `memgit git export`)'
+    console.print(f'[dim]Git sync:[/dim]  {git_status}   [dim]Flat memories/:[/dim] {flat_status}')
+    console.print()
+
+
+# ── squash ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option('--keep-last', type=int, default=None,
+              help='Keep this many recent checkpoints; squash the rest into one baseline')
+@click.option('--older-than', 'older_than_days', type=int, default=None, metavar='DAYS',
+              help='Squash all checkpoints older than N days')
+@click.option('--dry-run', is_flag=True, help='Preview what would be squashed without changing anything')
+def squash(keep_last, older_than_days, dry_run):
+    """Squash old checkpoints to keep history manageable at scale.
+
+    Like `git rebase --autosquash`, but for memory history. Collapses old
+    checkpoints into a single baseline so the store stays fast even at
+    10,000+ commits. The current memory state is always preserved — only
+    the historical chain is compressed.
+
+    Examples:
+
+      memgit squash --keep-last 100      Keep only the last 100 checkpoints
+
+      memgit squash --older-than 30      Squash everything older than 30 days
+
+      memgit squash --dry-run            Preview without making changes
+    """
+    repo = _require_repo()
+    result = repo.squash(
+        keep_last=keep_last,
+        older_than_days=older_than_days,
+        dry_run=dry_run,
+    )
+
+    kept = result['kept']
+    squashed = result['squashed']
+
+    if squashed == 0:
+        console.print('[yellow]Nothing to squash (too few checkpoints).[/yellow]')
+        return
+
+    if dry_run:
+        console.print(f'[dim]dry-run:[/dim] would squash [yellow]{squashed}[/yellow] checkpoints '
+                      f'(baseline: {result["baseline_ts"]}) '
+                      f'→ keep [green]{kept}[/green] recent ones')
+    else:
+        console.print(f'[green]squash[/green]  {squashed} old checkpoints '
+                      f'→ baseline at {result["baseline_ts"]}  '
+                      f'[dim]({kept} kept, new HEAD: {result.get("new_head", "?")})[/dim]')
+
+
+# ── git ───────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def git():
+    """Git-native sync — push/pull memories across machines and teammates.
+
+    memgit stores are plain git repos under the hood. Every memory is a
+    readable .toon file in memories/. Standard git commands work on them.
+
+    Quick start:
+
+      memgit git init                 Initialize git in your store
+
+      memgit git push                 Push memories to remote
+
+      memgit git pull                 Pull teammate memories from remote
+
+      memgit git export               Write flat memories/ files (no push)
+
+      memgit git status               Show what's changed since last push
+    """
+    pass
+
+
+@git.command('init')
+@click.option('--remote', default=None, help='Git remote URL to add as "origin" (optional)')
+def git_init(remote):
+    """Initialize git in the memory store for team sync.
+
+    After this, your memory store is a regular git repo. You can:
+
+      cd ~/.claude/memgit-store
+
+      git remote add origin git@github.com:yourteam/ai-memory.git
+
+      git push -u origin main
+
+    Then teammates run `memgit git pull` to get your memories.
+    """
+    repo = _require_repo()
+    ok = repo.git_init()
+    if not ok:
+        err.print('[red]git init failed — is git installed?[/red]')
+        return
+
+    store_root = repo.path.parent
+    if remote:
+        try:
+            import subprocess
+            subprocess.run(['git', 'remote', 'add', 'origin', remote],
+                           cwd=store_root, check=True, capture_output=True)
+            console.print(f'[green]git init[/green]  {store_root}  remote: {remote}')
+        except Exception:
+            console.print(f'[green]git init[/green]  {store_root}  [yellow](remote add failed — add manually)[/yellow]')
+    else:
+        console.print(f'[green]git init[/green]  {store_root}')
+        console.print(f'[dim]Add a remote: cd {store_root} && git remote add origin <url>[/dim]')
+
+    # Write initial flat files
+    repo.write_flat()
+    mem_count = len(list((store_root / 'memories').glob('*.toon')))
+    console.print(f'[dim]memories/: {mem_count} .toon files ready to commit[/dim]')
+
+
+@git.command('export')
+def git_export():
+    """Write all memories as flat .toon files in memories/ without pushing.
+
+    Creates one file per memory: memories/{slug}.toon
+
+    Files are human-readable, greppable, and diff-friendly. You can also
+    search across all your memories with: grep -r "trading" memories/
+    """
+    repo = _require_repo()
+    repo.write_flat()
+    store_root = repo.path.parent
+    count = len(list((store_root / 'memories').glob('*.toon')))
+    console.print(f'[green]export[/green]  {count} memories → {store_root / "memories"}')
+    console.print(f'[dim]Grep them: grep -rl "your query" {store_root / "memories"}[/dim]')
+
+
+@git.command('push')
+@click.argument('remote', default='origin')
+@click.argument('branch', default='main')
+@click.option('--message', '-m', default=None, help='Git commit message')
+def git_push(remote, branch, message):
+    """Write flat files, git commit, and push to remote.
+
+    This is how you share memories with teammates:
+
+      memgit git push                      Push to origin/main
+
+      memgit git push upstream feature     Push to upstream/feature
+    """
+    repo = _require_repo()
+    ok, msg = repo.git_push(remote=remote, branch=branch, message=message)
+    color = 'green' if ok else 'red'
+    console.print(f'[{color}]{"push" if ok else "error"}[/{color}]  {msg}')
+
+
+@git.command('pull')
+@click.argument('remote', default='origin')
+@click.argument('branch', default='main')
+def git_pull_cmd(remote, branch):
+    """Pull memories from a git remote and import them.
+
+    After a `git pull`, memgit imports any new or updated memories from
+    the memories/ flat files and creates a new checkpoint.
+
+    Teammate workflow:
+
+      git clone git@github.com:yourteam/ai-memory.git ~/.claude/memgit-store
+
+      memgit git pull          # then pull updates anytime
+    """
+    repo = _require_repo()
+    ok, msg, count = repo.git_pull(remote=remote, branch=branch)
+    color = 'green' if ok else 'red'
+    console.print(f'[{color}]{"pull" if ok else "error"}[/{color}]  {msg}')
+
+
+@git.command('status')
+def git_status_cmd():
+    """Show what's changed in the memory store since the last git commit."""
+    repo = _require_repo()
+    status = repo.git_status()
+    if status is None:
+        console.print('[yellow]Not a git repo. Run `memgit git init` first.[/yellow]')
+        return
+    if not status:
+        console.print('[green]Nothing to push — memories are in sync.[/green]')
+    else:
+        console.print('[bold]Changes since last git commit:[/bold]')
+        console.print(status)
+
+
 # ── setup ─────────────────────────────────────────────────────────────────────
 
 import shutil as _shutil

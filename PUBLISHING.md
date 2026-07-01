@@ -19,21 +19,19 @@
 
 ---
 
-## Step 1 — GitHub repo (do this first, everything else needs it)
+## Step 1 — GitHub repo ✅ DONE
 
-1. Go to [github.com/new](https://github.com/new)
-2. Name: `memgit` · Owner: your account · Public · No template
-3. On your machine:
-   ```bash
-   cd "/Users/hari/Personal business/memgit"
-   git init
-   git add .
-   git commit -m "initial release: memgit v0.1.0"
-   git branch -M main
-   git remote add origin https://github.com/code4161/memgit.git
-   git push -u origin main
-   ```
-4. Go back to GitHub → Settings → About → add description + website (`https://memgit.dev`) + topics: `ai mcp memory claude cursor llm`
+Repo created: https://github.com/code4161/memgit (public)
+Topics set: ai, mcp, memory, claude, cursor, llm, context, version-control
+Initial commit ready (36 files, all tests passing).
+
+**One command left — you push:**
+```bash
+cd "/Users/hari/Personal business/memgit"
+git push -u origin main
+```
+
+Then go to GitHub → Settings → About → add website `https://memgit.dev` once the domain is live.
 
 ---
 

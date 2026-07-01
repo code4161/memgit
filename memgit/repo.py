@@ -1,10 +1,11 @@
-"""Repository operations — init, add, commit, log, diff, show."""
+"""Repository operations — init, add, commit, log, diff, show, squash, flat-export."""
 
 from __future__ import annotations
 import os
+import subprocess
 import tomllib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +53,9 @@ class Repository:
         })
 
         repo = cls(memgit)
+
+        # Create flat memories directory for git-native sync
+        (project_dir / 'memories').mkdir(exist_ok=True)
 
         # Root checkpoint with empty MindState
         now = datetime.now(timezone.utc)
@@ -365,6 +369,314 @@ class Repository:
         if rebuild_index:
             self._rebuild_index()
         return errors
+
+    # ── Flat memories/ directory (git-native sync) ────────────────────────────
+
+    @property
+    def memories_dir(self) -> Path:
+        return self.path.parent / 'memories'
+
+    def write_flat(self):
+        """Write every indexed memory as a readable .toon file under memories/.
+
+        This is the git sync surface — users can `git push` this directory to
+        share memories across machines and teammates. Each file is human-readable
+        and diffable with standard git tools.
+        """
+        from .toon import serialize_mnemonic
+        mdir = self.memories_dir
+        mdir.mkdir(exist_ok=True)
+
+        index = self.get_index()
+        current_slugs: set[str] = set()
+
+        for slug, sha in index.items():
+            try:
+                m = self.store.read_mnemonic(sha)
+                toon_text = serialize_mnemonic(m)
+                (mdir / f'{slug}.toon').write_text(toon_text + '\n')
+                current_slugs.add(slug)
+            except Exception:
+                pass
+
+        # Remove stale files for deleted memories
+        for f in mdir.glob('*.toon'):
+            if f.stem not in current_slugs:
+                f.unlink()
+
+    def import_flat(self) -> int:
+        """Import memories from memories/ flat files into the object store.
+
+        Used after a `git pull` to absorb teammate memory updates.
+        Returns the number of memories imported.
+        """
+        from .toon import parse_toon
+        from .models import Mnemonic as MnemType
+        mdir = self.memories_dir
+        if not mdir.exists():
+            return 0
+        count = 0
+        for f in sorted(mdir.glob('*.toon')):
+            try:
+                objs = parse_toon(f.read_text())
+                for obj in objs:
+                    if isinstance(obj, MnemType):
+                        self.add(obj)
+                        count += 1
+            except Exception:
+                pass
+        return count
+
+    # ── Git integration ───────────────────────────────────────────────────────
+
+    def git_init(self) -> bool:
+        """Run `git init` in the store root (parent of .memgit/).
+
+        Creates a .gitignore that tracks memories/ but ignores the binary
+        object blobs. Returns True if successful."""
+        store_root = self.path.parent
+        gitignore = store_root / '.gitignore'
+        if not gitignore.exists():
+            gitignore.write_text(
+                '# memgit object blobs — large and redundant with memories/\n'
+                '.memgit/objects/\n'
+                '.memgit/logs/\n'
+                '*.pyc\n'
+            )
+        try:
+            if not (store_root / '.git').exists():
+                subprocess.run(['git', 'init'], cwd=store_root, check=True,
+                               capture_output=True)
+            return True
+        except Exception:
+            return False
+
+    def git_status(self) -> Optional[str]:
+        """Return git status output for the store root, or None if not a git repo."""
+        store_root = self.path.parent
+        if not (store_root / '.git').exists():
+            return None
+        try:
+            r = subprocess.run(['git', 'status', '--short'], cwd=store_root,
+                               capture_output=True, text=True, check=True)
+            return r.stdout.strip()
+        except Exception:
+            return None
+
+    def git_push(self, remote: str = 'origin', branch: str = 'main',
+                 message: str = None) -> tuple[bool, str]:
+        """Write flat files then `git add + commit + push`.
+
+        Returns (success, output_message).
+        """
+        store_root = self.path.parent
+        if not (store_root / '.git').exists():
+            return False, 'Not a git repo — run `memgit git init` first'
+        self.write_flat()
+        head_sha = self.head_sha() or 'none'
+        commit_msg = message or f'memgit: checkpoint {head_sha[:8]}'
+        try:
+            subprocess.run(['git', 'add', 'memories/', '.memgit/refs/'], cwd=store_root,
+                           check=True, capture_output=True)
+            r = subprocess.run(
+                ['git', 'diff', '--cached', '--quiet'],
+                cwd=store_root, capture_output=True,
+            )
+            if r.returncode == 0:
+                return True, 'Nothing to push (no changes since last git commit)'
+            subprocess.run(['git', 'commit', '-m', commit_msg], cwd=store_root,
+                           check=True, capture_output=True)
+            subprocess.run(['git', 'push', '-u', remote, branch], cwd=store_root,
+                           check=True, capture_output=True)
+            return True, f'Pushed to {remote}/{branch}'
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.decode() if e.stderr else str(e)
+
+    def git_pull(self, remote: str = 'origin', branch: str = 'main') -> tuple[bool, str, int]:
+        """Pull from git remote then import flat files.
+
+        Returns (success, message, memories_imported).
+        """
+        store_root = self.path.parent
+        if not (store_root / '.git').exists():
+            return False, 'Not a git repo', 0
+        try:
+            subprocess.run(['git', 'pull', remote, branch], cwd=store_root,
+                           check=True, capture_output=True)
+            count = self.import_flat()
+            if count > 0:
+                sha = self.commit(f'pull: imported {count} memories from {remote}/{branch}')
+                return True, f'Pulled {count} memories', count
+            return True, 'Already up to date', 0
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.decode() if e.stderr else str(e), 0
+
+    # ── Squash (scale to 10k+ commits) ───────────────────────────────────────
+
+    def squash(
+        self,
+        keep_last: int = None,
+        older_than_days: int = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Squash old checkpoints into a single baseline checkpoint.
+
+        Like `git rebase -i --autosquash`, but for memory history. Keeps the
+        full current memory state; collapses old checkpoint metadata.
+
+        Args:
+            keep_last: Keep this many recent checkpoints; squash the rest.
+            older_than_days: Squash all checkpoints older than N days.
+            dry_run: Preview only, no changes.
+
+        Returns dict with squash summary.
+        """
+        all_cks = self.log(limit=10_000)
+        if len(all_cks) < 3:
+            return {'squashed': 0, 'kept': len(all_cks), 'dry_run': dry_run}
+
+        # Determine the cut point
+        now = datetime.now(timezone.utc)
+        cut_idx = None
+
+        if keep_last is not None:
+            cut_idx = keep_last
+        elif older_than_days is not None:
+            cutoff = now - timedelta(days=older_than_days)
+            for i, ck in enumerate(all_cks):
+                if ck.timestamp < cutoff:
+                    cut_idx = i
+                    break
+        else:
+            cut_idx = max(1, len(all_cks) // 2)  # default: halve history
+
+        if cut_idx is None or cut_idx >= len(all_cks):
+            return {'squashed': 0, 'kept': len(all_cks), 'dry_run': dry_run}
+
+        kept_cks = all_cks[:cut_idx]          # newest N checkpoints, keep as-is
+        squashed_cks = all_cks[cut_idx:]      # older ones, collapse to one baseline
+
+        baseline_ck = squashed_cks[0]         # oldest of the squashed set = the baseline
+
+        summary = {
+            'kept': len(kept_cks),
+            'squashed': len(squashed_cks),
+            'baseline_sha': baseline_ck.sha[:8] if baseline_ck.sha else '?',
+            'baseline_ts': baseline_ck.timestamp.strftime('%Y-%m-%d'),
+            'dry_run': dry_run,
+        }
+
+        if dry_run:
+            return summary
+
+        # Step 1: Write a new "squash root" checkpoint that has no parent —
+        # this is the baseline. It carries the MindState from the oldest squashed
+        # checkpoint so the memory content at that point in time is preserved.
+        squash_root = Checkpoint(
+            mindstate_sha=baseline_ck.mindstate_sha,
+            timestamp=baseline_ck.timestamp,
+            trigger='squash',
+            message=f'squash root: {len(squashed_cks)} older checkpoints collapsed',
+            author=baseline_ck.author,
+            session_id=baseline_ck.session_id,
+            parent_sha=None,   # no parent — this is the new root
+            diff_summary=DiffSummary(),
+        )
+        squash_root_sha = self.store.write_checkpoint(squash_root)
+
+        # Step 2: Rewrite kept chain so oldest_kept.parent → squash_root
+        oldest_kept = kept_cks[-1]
+        remap: dict[str, str] = {}
+
+        rewritten_oldest = Checkpoint(
+            mindstate_sha=oldest_kept.mindstate_sha,
+            timestamp=oldest_kept.timestamp,
+            trigger=oldest_kept.trigger,
+            message=f'(squashed {len(squashed_cks)} older checkpoints) {oldest_kept.message}',
+            author=oldest_kept.author,
+            session_id=oldest_kept.session_id,
+            parent_sha=squash_root_sha,
+            diff_summary=oldest_kept.diff_summary,
+        )
+        remap[oldest_kept.sha] = self.store.write_checkpoint(rewritten_oldest)
+
+        # Step 3: Walk newer checkpoints, updating each parent pointer
+        for ck in reversed(kept_cks[:-1]):
+            parent = remap.get(ck.parent_sha, ck.parent_sha)
+            updated = Checkpoint(
+                mindstate_sha=ck.mindstate_sha,
+                timestamp=ck.timestamp,
+                trigger=ck.trigger,
+                message=ck.message,
+                author=ck.author,
+                session_id=ck.session_id,
+                parent_sha=parent,
+                diff_summary=ck.diff_summary,
+            )
+            remap[ck.sha] = self.store.write_checkpoint(updated)
+
+        # Step 4: Update HEAD
+        newest_kept_sha = remap.get(kept_cks[0].sha, kept_cks[0].sha)
+        self._set_ref(self.current_thread(), newest_kept_sha)
+        self._rebuild_index()
+
+        summary['new_head'] = newest_kept_sha[:8]
+        return summary
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+
+    def stats(self) -> dict:
+        """Compute token-savings statistics for the memory store."""
+        from .tokens import all_memories_tokens, memory_tokens, token_cost_usd
+        from .scorer import score as bm25_score
+
+        mnemonics = self.list()
+        if not mnemonics:
+            return {'total': 0}
+
+        full_tokens = all_memories_tokens(mnemonics)
+        avg_mem_tokens = full_tokens / len(mnemonics) if mnemonics else 0
+
+        # Simulate a typical search: top-8 results
+        sample_queries = [
+            'how should I approach this', 'project rules and conventions',
+            'user preferences', 'what to avoid', 'lessons learned',
+        ]
+        search_token_samples = []
+        for q in sample_queries:
+            results = bm25_score(q, mnemonics, top_k=8)
+            toks = sum(memory_tokens(r.mnemonic) for r in results)
+            search_token_samples.append(toks)
+        avg_search_tokens = round(sum(search_token_samples) / len(search_token_samples)) if search_token_samples else 0
+
+        critical = [m for m in mnemonics if m.priority == 3]
+        critical_tokens = sum(memory_tokens(m) for m in critical)
+
+        by_type: dict[str, int] = {}
+        for m in mnemonics:
+            by_type[m.type_code] = by_type.get(m.type_code, 0) + 1
+
+        checkpoints = self.log(limit=10_000)
+
+        return {
+            'total': len(mnemonics),
+            'by_type': by_type,
+            'priority_counts': {
+                3: sum(1 for m in mnemonics if m.priority == 3),
+                2: sum(1 for m in mnemonics if m.priority == 2),
+                1: sum(1 for m in mnemonics if m.priority == 1),
+            },
+            'full_tokens': full_tokens,
+            'avg_mem_tokens': round(avg_mem_tokens),
+            'avg_search_tokens': avg_search_tokens,
+            'critical_tokens': critical_tokens,
+            'reduction_pct': round(100 * (1 - avg_search_tokens / full_tokens)) if full_tokens else 0,
+            'weekly_savings_tokens': (full_tokens - avg_search_tokens) * 10,  # 10 sessions/week
+            'weekly_savings_usd': round(token_cost_usd((full_tokens - avg_search_tokens) * 10), 4),
+            'checkpoint_count': len(checkpoints),
+            'first_checkpoint_ts': checkpoints[-1].timestamp if checkpoints else None,
+            'last_checkpoint_ts': checkpoints[0].timestamp if checkpoints else None,
+        }
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

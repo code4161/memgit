@@ -20,10 +20,16 @@ from .toon import serialize_mnemonic
 
 
 _SERVER_DESCRIPTION = (
-    "memgit is a version-controlled memory store for AI assistants. "
-    "It stores facts, rules, preferences, and lessons learned across sessions. "
-    "Use search_memories at the start of every session to retrieve relevant context. "
-    "Use save_memory whenever you learn something worth remembering for future sessions."
+    "memgit is a version-controlled memory store — git for AI memory. "
+    "It stores typed, prioritized facts, rules, preferences, and lessons learned, "
+    "then serves only the most relevant ones per query via BM25 scoring. "
+    "CRITICAL INSTRUCTIONS: "
+    "(1) Call search_memories at the START of every session before answering the first question — "
+    "this loads your persistent context and prevents repeating questions the user has already answered. "
+    "(2) Call save_memory whenever you learn something durable — a rule the user corrected you on, "
+    "a preference they stated, a project decision, a lesson from a mistake. "
+    "Do NOT wait for the user to ask you to remember — save proactively. "
+    "(3) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini."
 )
 
 _TYPE_DESCRIPTIONS = (
