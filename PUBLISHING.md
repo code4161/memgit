@@ -8,8 +8,8 @@
 
 | # | Channel | Audience | Effort | Status |
 |---|---|---|---|---|
-| 1 | **GitHub repo** | Foundation for everything | 10 min | ✅ code4161/memgit (push ready) |
-| 2 | **PyPI** | All Python devs, Linux/Mac/Win | 20 min | ⬜ you do this |
+| 1 | **GitHub repo** | Foundation for everything | 10 min | ✅ code4161/memgit — live |
+| 2 | **PyPI** | All Python devs, Linux/Mac/Win | 20 min | ✅ v0.1.1 published — `pip install memgit` works |
 | 3 | **Homebrew tap** | Mac + Linux devs | 15 min | ⬜ you do this |
 | 4 | **Claude Code plugin** | Claude Code users | 10 min | ⬜ you do this |
 | 5 | **npm wrapper** | MCP/Cursor/Node ecosystem | 10 min | ⬜ you do this |
@@ -21,56 +21,34 @@
 
 ## Step 1 — GitHub repo ✅ DONE
 
-Repo created: https://github.com/code4161/memgit (public)
+Repo live: https://github.com/code4161/memgit (public)
 Topics set: ai, mcp, memory, claude, cursor, llm, context, version-control
-Initial commit ready (36 files, all tests passing).
-
-**One command left — you push:**
-```bash
-cd "/Users/hari/Personal business/memgit"
-git push -u origin main
-```
-
-Then go to GitHub → Settings → About → add website `https://memgit.dev` once the domain is live.
+Logo: `assets/logo.png` committed and shown in README.
+Latest commit: v0.1.1 (48 tests passing).
 
 ---
 
-## Step 2 — PyPI (pip install memgit)
+## Step 2 — PyPI (pip install memgit) ✅ DONE
 
-**One-time account setup:**
-1. Create account at [pypi.org/account/register](https://pypi.org/account/register)
-2. Enable 2FA (required): Settings → Two-factor authentication
-3. Add GitHub as Trusted Publisher (no API key needed):
-   - PyPI → Your projects → Publishing → Add a new pending publisher
-   - Fill in: GitHub owner=`code4161` · Repo=`memgit` · Workflow=`publish.yml` · Environment=`pypi`
+**Published:** v0.1.1 live at https://pypi.org/project/memgit/
 
-**Create the `pypi` environment in GitHub:**
-- Repo → Settings → Environments → New environment → name it `pypi`
+**How it was set up:**
+- PyPI account created as `memgit`
+- API token stored as GitHub Actions secret `PYPI_TOKEN` (via `gh secret set`)
+- `.github/workflows/publish.yml` — triggers on `v*.*.*` tags, builds with `python -m build`, publishes via `twine upload` using `__token__` auth
 
-**Publish (now and on every new version):**
+**To publish future versions:**
 ```bash
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-cd "/Users/hari/Personal business/memgit"
-
-# Build
-uv build
-
-# Publish (uses OIDC — no token needed after trusted publisher setup)
-uv publish
-```
-
-**Or use GitHub Actions (automatic on every git tag):**
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-# GitHub Actions in .github/workflows/publish.yml fires automatically
+# 1. Bump version in pyproject.toml
+# 2. Commit, then tag and push:
+git tag v0.1.2
+git push origin v0.1.2
+# GitHub Actions fires automatically and publishes to PyPI
 ```
 
 **Verify:**
 ```bash
-pip install memgit    # should work ~2 minutes after publish
+pip install memgit
 memgit --version
 ```
 
