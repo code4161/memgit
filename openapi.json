@@ -16,14 +16,16 @@
       "post": {
         "operationId": "search_memories",
         "summary": "Search memories by relevance",
-        "description": "Search the persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated before, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by BM25 relevance — only what matters, not everything.",
+        "description": "Search the persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated before, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by BM25 relevance \u2014 only what matters, not everything.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["query"],
+                "required": [
+                  "query"
+                ],
                 "properties": {
                   "query": {
                     "type": "string",
@@ -37,7 +39,14 @@
                   },
                   "type_filter": {
                     "type": "string",
-                    "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                    "enum": [
+                      "fb",
+                      "us",
+                      "pj",
+                      "rf",
+                      "cn",
+                      "lx"
+                    ],
                     "description": "fb=feedback (corrections, preferences), us=user profile (role, goals), pj=project (active work, decisions), rf=reference (pointers to external systems), cn=convention (code/architecture rules), lx=lesson (post-mortems, 'we got burned by X')"
                   }
                 }
@@ -52,7 +61,9 @@
               "application/json": {
                 "schema": {
                   "type": "array",
-                  "items": { "$ref": "#/components/schemas/Memory" }
+                  "items": {
+                    "$ref": "#/components/schemas/Memory"
+                  }
                 }
               }
             }
@@ -70,7 +81,9 @@
             "name": "slug",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "Kebab-case memory slug, e.g. 'ig-pipeline-no-fallback'"
           }
         ],
@@ -79,7 +92,9 @@
             "description": "Full memory object",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Memory" }
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
               }
             }
           },
@@ -91,13 +106,15 @@
       "put": {
         "operationId": "save_memory",
         "summary": "Save or update a memory",
-        "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time — a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details. If a memory with the same slug already exists, this updates it.",
+        "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time \u2014 a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details. If a memory with the same slug already exists, this updates it.",
         "parameters": [
           {
             "name": "slug",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "Short kebab-case identifier, unique per memory. Examples: 'user-prefers-terse-responses', 'trading-confirm-only-orders'"
           }
         ],
@@ -107,7 +124,9 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["rule"],
+                "required": [
+                  "rule"
+                ],
                 "properties": {
                   "rule": {
                     "type": "string",
@@ -115,13 +134,20 @@
                   },
                   "type_code": {
                     "type": "string",
-                    "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                    "enum": [
+                      "fb",
+                      "us",
+                      "pj",
+                      "rf",
+                      "cn",
+                      "lx"
+                    ],
                     "default": "fb",
                     "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
                   },
                   "why": {
                     "type": "string",
-                    "description": "Why this rule exists — the incident, reason, or motivation. Optional but strongly recommended."
+                    "description": "Why this rule exists \u2014 the incident, reason, or motivation. Optional but strongly recommended."
                   },
                   "when": {
                     "type": "string",
@@ -129,12 +155,18 @@
                   },
                   "tags": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {
+                      "type": "string"
+                    },
                     "description": "Topic tags for filtering, e.g. ['instagram', 'trading']"
                   },
                   "priority": {
                     "type": "integer",
-                    "enum": [1, 2, 3],
+                    "enum": [
+                      1,
+                      2,
+                      3
+                    ],
                     "default": 2,
                     "description": "1=low (background context), 2=medium (apply when relevant), 3=critical (always loaded)"
                   }
@@ -151,9 +183,22 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "status": { "type": "string", "enum": ["ok"] },
-                    "action": { "type": "string", "enum": ["saved", "updated"] },
-                    "slug": { "type": "string" }
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "saved",
+                        "updated"
+                      ]
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -166,21 +211,31 @@
       "get": {
         "operationId": "list_memories",
         "summary": "List all memories (compact)",
-        "description": "List all memories, returning slug + rule for each. CALL THIS to browse what is stored or discover memory slugs for get_memory. For finding relevant memories on a topic, use search_memories instead — it is faster and ranked.",
+        "description": "List all memories, returning slug + rule for each. CALL THIS to browse what is stored or discover memory slugs for get_memory. For finding relevant memories on a topic, use search_memories instead \u2014 it is faster and ranked.",
         "parameters": [
           {
             "name": "type_filter",
             "in": "query",
             "schema": {
               "type": "string",
-              "enum": ["fb", "us", "pj", "rf", "cn", "lx"]
+              "enum": [
+                "fb",
+                "us",
+                "pj",
+                "rf",
+                "cn",
+                "lx"
+              ]
             },
             "description": "Filter by type: fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
           },
           {
             "name": "min_priority",
             "in": "query",
-            "schema": { "type": "integer", "default": 1 },
+            "schema": {
+              "type": "integer",
+              "default": 1
+            },
             "description": "Only return memories at or above this priority (1=all, 2=medium+, 3=critical only)"
           }
         ],
@@ -194,10 +249,18 @@
                   "items": {
                     "type": "object",
                     "properties": {
-                      "slug": { "type": "string" },
-                      "type": { "type": "string" },
-                      "priority": { "type": "integer" },
-                      "rule": { "type": "string" }
+                      "slug": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      },
+                      "priority": {
+                        "type": "integer"
+                      },
+                      "rule": {
+                        "type": "string"
+                      }
                     }
                   }
                 }
@@ -211,12 +274,15 @@
       "get": {
         "operationId": "get_checkpoint_log",
         "summary": "Get checkpoint history",
-        "description": "Show recent checkpoint history — when memories were last synced and what changed. CALL THIS to understand how fresh the memory store is.",
+        "description": "Show recent checkpoint history \u2014 when memories were last synced and what changed. CALL THIS to understand how fresh the memory store is.",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
-            "schema": { "type": "integer", "default": 5 },
+            "schema": {
+              "type": "integer",
+              "default": 5
+            },
             "description": "Max checkpoints to return"
           }
         ],
@@ -230,14 +296,65 @@
                   "items": {
                     "type": "object",
                     "properties": {
-                      "sha": { "type": "string" },
-                      "timestamp": { "type": "string", "format": "date-time" },
-                      "message": { "type": "string" },
-                      "added": { "type": "integer" },
-                      "modified": { "type": "integer" },
-                      "removed": { "type": "integer" }
+                      "sha": {
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "added": {
+                        "type": "integer"
+                      },
+                      "modified": {
+                        "type": "integer"
+                      },
+                      "removed": {
+                        "type": "integer"
+                      }
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/resume": {
+      "get": {
+        "operationId": "resumeSession",
+        "summary": "Where-we-left-off digest: last checkpoints, staged work, recent + critical memories",
+        "parameters": [
+          {
+            "name": "checkpoints",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 5
+            },
+            "description": "Recent checkpoints to include"
+          },
+          {
+            "name": "recent",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            },
+            "description": "Recently updated memories to include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resume context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
                 }
               }
             }
@@ -250,7 +367,12 @@
     "schemas": {
       "Memory": {
         "type": "object",
-        "required": ["slug", "type", "priority", "rule"],
+        "required": [
+          "slug",
+          "type",
+          "priority",
+          "rule"
+        ],
         "properties": {
           "slug": {
             "type": "string",
@@ -258,12 +380,23 @@
           },
           "type": {
             "type": "string",
-            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+            "enum": [
+              "fb",
+              "us",
+              "pj",
+              "rf",
+              "cn",
+              "lx"
+            ],
             "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
           },
           "priority": {
             "type": "integer",
-            "enum": [1, 2, 3],
+            "enum": [
+              1,
+              2,
+              3
+            ],
             "description": "1=low, 2=medium, 3=critical (always loaded)"
           },
           "rule": {
@@ -280,7 +413,9 @@
           },
           "tags": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "score": {
             "type": "number",

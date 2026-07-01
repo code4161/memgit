@@ -96,9 +96,14 @@ class MemgitHandler(BaseHTTPRequestHandler):
 
         if path == "/status":
             repo = _load_repo(self.store_path)
+            try:
+                from importlib.metadata import version as _pkg_version
+                ver = _pkg_version("memgit")
+            except Exception:
+                ver = "unknown"
             self._json_response({
                 "status": "ok",
-                "version": "0.1.2",
+                "version": ver,
                 "store": str(self.store_path or _default_store()),
                 "initialized": repo is not None,
                 "memory_count": len(repo.list()) if repo else 0,
@@ -139,6 +144,16 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 self._error(f"Memory not found: {slug}", 404)
                 return
             self._json_response(_mnem_to_dict(mem))
+            return
+
+        if path == "/resume":
+            repo = _load_repo(self.store_path)
+            if repo is None:
+                self._error("memgit store not found.", 503)
+                return
+            n_ck = int(qs.get("checkpoints", [5])[0])
+            n_recent = int(qs.get("recent", [10])[0])
+            self._json_response(repo.resume_context(checkpoints=n_ck, recent=n_recent))
             return
 
         if path == "/checkpoints":

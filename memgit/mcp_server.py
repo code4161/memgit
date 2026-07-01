@@ -23,9 +23,13 @@ _SERVER_DESCRIPTION = (
     "memgit is a version-controlled memory store — git for AI memory. "
     "It stores typed, prioritized facts, rules, preferences, and lessons learned, "
     "then serves only the most relevant ones per query via BM25 scoring. "
-    "CRITICAL INSTRUCTIONS: "
-    "(1) Call search_memories at the START of every session before answering the first question — "
-    "this loads your persistent context and prevents repeating questions the user has already answered. "
+    "HOW TO USE IT WELL — apply judgment, not keywords: "
+    "(1) Before answering, ask yourself: does this request depend on state I don't have in "
+    "context? A request that presupposes shared history ('continue', 'the pending tasks', "
+    "'that bug from yesterday') cannot be answered from the current conversation or open "
+    "files alone — resume_session is the record of what actually happened last; "
+    "search_memories answers topic-specific questions about past work and preferences. "
+    "When in doubt, checking memory is cheap; guessing wrong is not. "
     "(2) Call save_memory whenever you learn something durable — a rule the user corrected you on, "
     "a preference they stated, a project decision, a lesson from a mistake. "
     "Do NOT wait for the user to ask you to remember — save proactively. "
@@ -82,11 +86,43 @@ def run_server(store_path: Path | None = None) -> None:
     """Run the MCP server on stdio."""
     server = Server(
         "memgit",
+        instructions=_SERVER_DESCRIPTION,
     )
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         return [
+            Tool(
+                name="resume_session",
+                description=(
+                    "Get a compact 'where we left off' digest: the last checkpoints (most recent "
+                    "actions taken), staged work in flight, recently updated memories, and critical "
+                    "rules that always apply. "
+                    "This is the authoritative record of what happened in previous sessions. "
+                    "Use your judgment about when the current request depends on that record: "
+                    "any ask that presupposes shared history — continuing work, referencing "
+                    "'pending' or 'recent' things, resuming after a break — can't be answered "
+                    "correctly from the conversation or open files alone, however plausible they "
+                    "look. An open file shows what the user is looking at; this shows what was "
+                    "actually done last. Cheap to call, so prefer checking over assuming; skip it "
+                    "only when the request is clearly self-contained."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "checkpoints": {
+                            "type": "integer",
+                            "description": "How many recent checkpoints to include (default 5)",
+                            "default": 5,
+                        },
+                        "recent": {
+                            "type": "integer",
+                            "description": "How many recently updated memories to include (default 10)",
+                            "default": 10,
+                        },
+                    },
+                },
+            ),
             Tool(
                 name="search_memories",
                 description=(
@@ -275,7 +311,14 @@ def run_server(store_path: Path | None = None) -> None:
                 text="Error: memgit store not found. Run `memgit init` in ~/.claude/memgit-store/",
             )]
 
-        if name == "search_memories":
+        if name == "resume_session":
+            from .cli import _format_resume_plain
+            n_ck = int(arguments.get("checkpoints", 5))
+            n_recent = int(arguments.get("recent", 10))
+            ctx = repo.resume_context(checkpoints=n_ck, recent=n_recent)
+            return [TextContent(type="text", text=_format_resume_plain(ctx))]
+
+        elif name == "search_memories":
             query = arguments.get("query", "")
             top_k = min(int(arguments.get("top_k", 8)), 30)
             type_filter = arguments.get("type_filter")

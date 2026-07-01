@@ -11,6 +11,12 @@ memgit setup         # register with your AI tools (interactive picker)
 ## Everyday commands
 
 ```bash
+# Where did we leave off? (last checkpoints, work in flight, critical rules)
+memgit resume
+
+# Auto-inject that digest into every new Claude Code session
+memgit setup hooks
+
 # See current state
 memgit status
 
@@ -44,6 +50,13 @@ memgit rollback HEAD~1             # apply (history is preserved)
 
 # Import existing Claude Code memory files
 memgit import claude-code ~/.claude/projects/
+
+# Multi-agent: merge another thread's memories into the current one
+memgit merge agent-1
+
+# Maintenance: compress old history, then reclaim disk
+memgit squash --keep-last 100
+memgit gc
 ```
 
 ## Memory types

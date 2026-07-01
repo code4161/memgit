@@ -8,7 +8,8 @@ memgit stores facts, rules, preferences, and lessons from your sessions in a ver
 
 ## Tools available (via MCP)
 
-- **search_memories** — call this at session start to retrieve relevant context
+- **resume_session** — the "where we left off" digest: last checkpoints, work in flight, critical rules
+- **search_memories** — ranked recall of facts/rules/preferences relevant to a topic
 - **save_memory** — call this when the user states a preference or you learn something durable
 - **get_memory** — fetch full details of a specific memory by slug
 - **list_memories** — browse all stored memories
@@ -16,9 +17,13 @@ memgit stores facts, rules, preferences, and lessons from your sessions in a ver
 
 ## When to use each tool
 
-- **Always call search_memories** at the start of a session before answering questions about past work or applying preferences
-- **Call save_memory** whenever the user corrects you, states a preference, makes a decision, or you learn something that should persist beyond this session
-- **Never re-read markdown memory files** if memgit is available — use search_memories instead (faster, ranked)
+Use judgment, not keyword matching. The test is: **does this request depend on state you don't have in context?**
+
+- A request that presupposes shared history — "continue", "the pending tasks", "that bug from before", resuming after a break — cannot be answered from the conversation or open files alone. **resume_session** is the authoritative record of what was actually done last; an open file only shows what the user is looking at.
+- Questions that touch past work, prior decisions, or user preferences → **search_memories** before answering. Checking is cheap; guessing wrong is not.
+- **Call save_memory** whenever the user corrects you, states a preference, makes a decision, or you learn something that should persist beyond this session — don't wait to be asked.
+- **Never re-read markdown memory files** if memgit is available — use search_memories instead (faster, ranked).
+- Skip memory calls only when the request is clearly self-contained.
 
 ## Memory types
 

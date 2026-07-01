@@ -151,33 +151,76 @@ Restart your AI tool — it now searches your memory store at the start of every
 
 ---
 
+## Resume where you left off
+
+Ask an AI "can we proceed on the pending tasks?" in a fresh session and it will guess from whatever file happens to be open. `memgit resume` replaces the guess with the record:
+
+```bash
+memgit resume            # last checkpoints, work in flight, recent + critical memories
+memgit resume --plain    # plain text, for piping into an AI context
+memgit resume --json     # for tooling
+```
+
+Wire it into Claude Code so every new session **starts** with this digest in context — no tool call, no judgment required:
+
+```bash
+memgit setup hooks       # installs a SessionStart hook (~/.claude/settings.json)
+```
+
+The digest is deliberately bounded (~350 tokens measured on a 500-memory store): rules are clipped, the critical list is capped, and full text is one `get_memory` call away.
+
+---
+
 ## Scale to 10,000+ sessions
 
-After months of use, your checkpoint history grows. `memgit squash` handles it:
+After months of use, your checkpoint history grows. Squash compresses it, gc reclaims the disk:
 
 ```bash
 memgit squash --keep-last 100    # keep last 100 checkpoints, squash everything older
 memgit squash --older-than 30    # squash everything older than 30 days
 memgit squash --dry-run          # preview first
+
+memgit gc                        # delete unreachable objects, trim reflogs
+memgit gc --dry-run              # preview
+memgit gc --squash-keep 200      # compact history, then sweep
 ```
 
-The current memory **state is always preserved** — squash only compresses the historical chain.
+The current memory **state is always preserved** — and squash is lossless-in-substance: every collapsed checkpoint leaves a one-line record (time, author, diff, message) in an append-only archive under `.memgit/logs/archive/` that gc never touches. Benchmark on a 2,000-checkpoint store: **94% smaller** (39.5 MB → 2.2 MB), `fsck` clean. History operations stay O(1) as the chain grows (SHA resolution and checkpoint counting measured at ~0.08 ms at 2,000 checkpoints).
+
+---
+
+## Multiple agents, one memory
+
+All writes go through a git-style store lock (0.08 ms overhead), so concurrent agents can't corrupt the store or lose each other's updates. Two patterns:
+
+**Shared thread** — agents write concurrently; if one commits while another has work staged, the second commit auto-merges (three-way, against the recorded base) instead of clobbering. Set `MEMGIT_AUTHOR=agent-name` so each checkpoint says who did it.
+
+**Thread per agent** — isolate, then integrate:
+
+```bash
+memgit thread create agent-1     # branch off for each agent
+# ... agents work on their own threads ...
+memgit merge agent-1             # three-way merge back (common-ancestor based)
+```
+
+Conflicts (same memory changed on both sides) resolve to the newest version; an edit always beats a delete. Both histories are preserved.
 
 ---
 
 ## What the AI sees
 
-Once registered via MCP, every AI tool gets 5 tools:
+Once registered via MCP, every AI tool gets 6 tools:
 
 | Tool | When the AI uses it |
 |---|---|
-| `search_memories` | Start of every session — loads relevant context automatically |
+| `resume_session` | When the request depends on prior state — "continue", "the pending tasks", session start |
+| `search_memories` | Before answering anything that touches past work or preferences |
 | `get_memory` | When it needs full details of a specific memory |
 | `list_memories` | To browse or audit what's stored |
 | `save_memory` | When it learns something worth keeping for next time |
 | `get_checkpoint_log` | To check when memories were last synced |
 
-The tool descriptions tell the AI **when** to call each one — making it default behavior, not opt-in.
+The tool descriptions teach the AI **judgment** — "does this request depend on state you don't have in context?" — rather than keyword triggers. Measured cost of the whole tool surface: ~1,150 tokens once per session; a `resume_session` reply is ~335.
 
 ---
 
@@ -195,10 +238,13 @@ memgit remove <slug>              # remove from active index (history preserved)
 memgit status                     # staged changes
 memgit search <query>             # BM25 relevance search
 memgit rollback <ref>             # restore state to a checkpoint (HEAD~N or SHA)
-memgit squash                     # compress old history
+memgit resume                     # where we left off — session-start digest
+memgit merge <thread>             # three-way merge a thread into the current one
 
 # Scale & proof
-memgit stats                      # token savings vs alternatives
+memgit squash                     # compress old history (archives what it collapses)
+memgit gc                         # reclaim disk: sweep unreachable objects
+memgit stats                      # token savings + disk usage
 memgit lint                       # validate all memories
 memgit fsck                       # verify store integrity
 
@@ -223,6 +269,8 @@ memgit setup cursor
 memgit setup windsurf
 memgit setup cline
 memgit setup continue
+memgit setup gemini-cli
+memgit setup hooks                # Claude Code SessionStart hook → auto-inject resume digest
 
 # Server
 memgit serve                      # MCP stdio (Claude Code, Cursor, Windsurf, Cline)
@@ -322,6 +370,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] `memgit git push/pull` — team sync via standard git
 - [x] Flat `memories/` directory — grep/diff/blame your memories
 - [x] D3.js graph visualization of memory relationships
+- [x] `memgit resume` + SessionStart hook — sessions start with "where we left off"
+- [x] `memgit gc` — space reclamation (mark-and-sweep, lossless squash archive)
+- [x] Multi-agent write safety — store lock, auto-merge commits, `memgit merge`
 - [x] PyPI + Homebrew (tap) + npm published (v0.1.5)
 - [ ] Chocolatey (not yet live on community.chocolatey.org)
 - [x] Interactive setup wizard (`memgit setup`)

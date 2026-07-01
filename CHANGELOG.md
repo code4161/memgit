@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.0] — 2026-07-02
+
+Session resume, garbage collection, and multi-agent write safety.
+
+### Added
+- **`memgit resume`** — a bounded "where we left off" digest: last checkpoints, staged work in flight, recently updated memories, and critical rules. `--plain` for context injection, `--json` for tooling. Measured ~335 tokens regardless of store size (rules clipped, critical list capped at 20).
+- **`resume_session` MCP tool** — same digest for AI clients; the authoritative record of last actions, so agents stop guessing session state from open files. Also `GET /resume` on the HTTP server and `resume_session` entries in `llm-tool-definitions.json` / `openapi.json`.
+- **`memgit setup hooks`** — installs a Claude Code SessionStart hook that injects `memgit resume --plain` into every new session automatically (`--remove` to uninstall). The model sees your last actions without having to decide to look.
+- **`memgit gc`** — mark-and-sweep space reclamation: deletes only provably-unreachable objects (reachable history and staged memories are never touched), trims reflogs, reports bytes freed. `--dry-run`, `--squash-keep N` to compact then sweep. Benchmark: a 2,000-checkpoint store shrank 94% (39.5 MB → 2.2 MB) with `fsck` clean.
+- **`memgit merge <thread>`** — three-way merge of another thread into the current one (nearest-common-ancestor based). Enables branch-per-agent workflows: each agent works on its own thread, results merge back. Conflicts resolve to the newest mnemonic; an edit always beats a delete.
+- **Store-wide write lock** — git-style lockfile with stale-lock breaking (dead pid or >60 s old) serializes concurrent writers; `MEMGIT_LOCK_TIMEOUT` env tunes the wait. Measured overhead: 0.08 ms per acquire/release.
+- **Concurrent-commit auto-merge** — the staging index now records its base checkpoint; if another agent moved HEAD since staging, `commit` three-way merges instead of silently clobbering (trigger `merge`, message notes the auto-merge).
+- **`MEMGIT_AUTHOR` env** — per-agent checkpoint attribution in multi-agent jobs.
+- **`memgit setup gemini-cli`** — register the MCP server with Gemini CLI (`~/.gemini/settings.json`); also included in `setup all` detection.
+- `memgit log --skip N` — history pagination.
+- `memgit stats` now reports object count and disk usage.
+- **AI-operator surface** — memgit's primary operator is an AI agent, so the store signals its own upkeep: `resume`/`status`/`stats` emit a one-line maintenance hint when history passes 500 checkpoints or 50 MB (naming the exact command to run), and `gc`/`squash`/`stats` grew `--json` flags for terse machine-readable output instead of token-heavy rich tables.
+
+### Changed
+- **Squash now archives, never discards** — collapsed checkpoints leave one-line records (sha, time, trigger, author, diff, message) in an append-only `.memgit/logs/archive/<thread>` file that gc never touches. Compaction is lossless-in-substance.
+- **History operations scale to long chains** — SHA-prefix resolution uses the object-store fan-out directories instead of walking the whole chain (92.7 ms → 0.08 ms at 2,000 checkpoints), and checkpoint counting uses an incrementally-maintained per-thread cache (92 ms → 0.07 ms; self-heals on any mismatch).
+- MCP server instructions and tool descriptions now teach *judgment* ("does this request depend on state you don't have?") instead of keyword triggers; server `instructions` are actually passed in the MCP handshake (previously defined but never sent).
+
+### Fixed
+- **`squash` silently discarded staged (uncommitted) memories** — it rebuilt the index from the new HEAD; staged work now survives a squash.
+- **`python -m memgit.cli` did nothing** — missing `__main__` guard; this was the documented last-resort fallback for MCP registration, which would have produced a silently-dead server.
+
 ## [0.1.5] — 2026-07-02
 
 ### Fixed

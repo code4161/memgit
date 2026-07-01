@@ -1,125 +1,182 @@
 {
-  "_comment": "Drop-in tool definitions for OpenAI function calling, Anthropic tool_use, and Gemini function declarations. Same schema works across all three — just adapt the wrapper format per provider.",
-  "tools": [
-    {
-      "name": "search_memories",
-      "description": "Search your persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by relevance — only what matters, not everything. This is faster and more targeted than reading individual memory files.",
-      "parameters": {
-        "type": "object",
-        "required": ["query"],
-        "properties": {
-          "query": {
-            "type": "string",
-            "description": "Natural-language description of what you want to recall. Examples: 'user preferences for code style', 'how does the Instagram pipeline work', 'what trading rules should I follow'"
-          },
-          "top_k": {
-            "type": "integer",
-            "description": "Max results to return (default 8, max 30). Use 15-20 for broad topic discovery.",
-            "default": 8
-          },
-          "type_filter": {
-            "type": "string",
-            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
-            "description": "fb=feedback (corrections, preferences), us=user profile (role, goals, expertise), pj=project (active work, decisions, deadlines), rf=reference (pointers to external systems/URLs), cn=convention (code style, architecture rules), lx=lesson (post-mortems, hard-won lessons)"
-          }
-        }
-      }
-    },
-    {
-      "name": "get_memory",
-      "description": "Fetch a single memory by its exact slug identifier. CALL THIS when search_memories returned a relevant slug and you need the full details — why the rule exists, when to apply it, related tags. Slugs are kebab-case like 'ig-pipeline-no-fallback' or 'trading-capital-track'.",
-      "parameters": {
-        "type": "object",
-        "required": ["slug"],
-        "properties": {
-          "slug": {
-            "type": "string",
-            "description": "The kebab-case memory slug, e.g. 'ig-pipeline-no-fallback'"
-          }
-        }
-      }
-    },
-    {
-      "name": "save_memory",
-      "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time — a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details; save durable facts only. If a memory with the same slug exists, this updates it.",
-      "parameters": {
-        "type": "object",
-        "required": ["slug", "rule"],
-        "properties": {
-          "slug": {
-            "type": "string",
-            "description": "Short kebab-case identifier, unique per memory. Examples: 'user-prefers-terse-responses', 'ig-pipeline-no-fallback', 'trading-confirm-only-orders'. Use the same slug to update an existing memory."
-          },
-          "rule": {
-            "type": "string",
-            "description": "The primary fact or rule to remember (max ~200 chars). Write as a declarative statement: 'always X', 'never Y', 'Z is located at ...'."
-          },
-          "type_code": {
-            "type": "string",
-            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
-            "default": "fb",
-            "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
-          },
-          "why": {
-            "type": "string",
-            "description": "Why this rule exists — the incident, reason, or motivation. Optional but strongly recommended so future sessions understand the context."
-          },
-          "when": {
-            "type": "string",
-            "description": "When or where to apply this rule. Optional."
-          },
-          "tags": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Topic tags for search filtering. Examples: ['instagram', 'trading', 'admin']"
-          },
-          "priority": {
-            "type": "integer",
-            "enum": [1, 2, 3],
-            "default": 2,
-            "description": "1=low (background context), 2=medium (apply when relevant, default), 3=critical (always loaded into every session)"
-          }
-        }
-      }
-    },
-    {
-      "name": "list_memories",
-      "description": "List all memories, returning slug + rule for each (compact view). CALL THIS to browse what is stored, discover memory slugs, or audit the full memory set. For finding relevant memories on a specific topic, use search_memories instead — it is faster and ranked by relevance.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "type_filter": {
-            "type": "string",
-            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
-            "description": "Filter by type: fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
-          },
-          "min_priority": {
-            "type": "integer",
-            "enum": [1, 2, 3],
-            "default": 1,
-            "description": "Only return memories at or above this priority. 1=all, 2=medium and critical only, 3=critical only."
-          }
-        }
-      }
+ "_comment": "Drop-in tool definitions for OpenAI function calling, Anthropic tool_use, and Gemini function declarations. Same schema works across all three \u2014 just adapt the wrapper format per provider.",
+ "tools": [
+  {
+   "name": "resume_session",
+   "description": "Get a compact 'where we left off' digest: the last checkpoints (most recent actions taken), staged work in flight, recently updated memories, and critical rules that always apply. This is the authoritative record of what happened in previous sessions. Use judgment: any request that presupposes shared history \u2014 continuing work, 'the pending tasks', resuming after a break \u2014 cannot be answered from the conversation alone. Cheap to call; prefer checking over assuming.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "checkpoints": {
+      "type": "integer",
+      "description": "Recent checkpoints to include (default 5)"
+     },
+     "recent": {
+      "type": "integer",
+      "description": "Recently updated memories to include (default 10)"
+     }
     }
-  ],
-  "provider_wrappers": {
-    "openai": {
-      "_comment": "Wrap each tool as: { type: 'function', function: { name, description, parameters } }",
-      "example": {
-        "type": "function",
-        "function": {
-          "name": "search_memories",
-          "description": "...",
-          "parameters": { "...": "same as above" }
-        }
-      }
-    },
-    "anthropic": {
-      "_comment": "Use tools directly: { name, description, input_schema: { type: 'object', properties, required } }"
-    },
-    "gemini": {
-      "_comment": "Use FunctionDeclaration: { name, description, parameters: { type: 'OBJECT', properties, required } }. Enum values go in: { type: 'STRING', enum: [...] }"
+   }
+  },
+  {
+   "name": "search_memories",
+   "description": "Search your persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by relevance \u2014 only what matters, not everything. This is faster and more targeted than reading individual memory files.",
+   "parameters": {
+    "type": "object",
+    "required": [
+     "query"
+    ],
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Natural-language description of what you want to recall. Examples: 'user preferences for code style', 'how does the Instagram pipeline work', 'what trading rules should I follow'"
+     },
+     "top_k": {
+      "type": "integer",
+      "description": "Max results to return (default 8, max 30). Use 15-20 for broad topic discovery.",
+      "default": 8
+     },
+     "type_filter": {
+      "type": "string",
+      "enum": [
+       "fb",
+       "us",
+       "pj",
+       "rf",
+       "cn",
+       "lx"
+      ],
+      "description": "fb=feedback (corrections, preferences), us=user profile (role, goals, expertise), pj=project (active work, decisions, deadlines), rf=reference (pointers to external systems/URLs), cn=convention (code style, architecture rules), lx=lesson (post-mortems, hard-won lessons)"
+     }
     }
+   }
+  },
+  {
+   "name": "get_memory",
+   "description": "Fetch a single memory by its exact slug identifier. CALL THIS when search_memories returned a relevant slug and you need the full details \u2014 why the rule exists, when to apply it, related tags. Slugs are kebab-case like 'ig-pipeline-no-fallback' or 'trading-capital-track'.",
+   "parameters": {
+    "type": "object",
+    "required": [
+     "slug"
+    ],
+    "properties": {
+     "slug": {
+      "type": "string",
+      "description": "The kebab-case memory slug, e.g. 'ig-pipeline-no-fallback'"
+     }
+    }
+   }
+  },
+  {
+   "name": "save_memory",
+   "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time \u2014 a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details; save durable facts only. If a memory with the same slug exists, this updates it.",
+   "parameters": {
+    "type": "object",
+    "required": [
+     "slug",
+     "rule"
+    ],
+    "properties": {
+     "slug": {
+      "type": "string",
+      "description": "Short kebab-case identifier, unique per memory. Examples: 'user-prefers-terse-responses', 'ig-pipeline-no-fallback', 'trading-confirm-only-orders'. Use the same slug to update an existing memory."
+     },
+     "rule": {
+      "type": "string",
+      "description": "The primary fact or rule to remember (max ~200 chars). Write as a declarative statement: 'always X', 'never Y', 'Z is located at ...'."
+     },
+     "type_code": {
+      "type": "string",
+      "enum": [
+       "fb",
+       "us",
+       "pj",
+       "rf",
+       "cn",
+       "lx"
+      ],
+      "default": "fb",
+      "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+     },
+     "why": {
+      "type": "string",
+      "description": "Why this rule exists \u2014 the incident, reason, or motivation. Optional but strongly recommended so future sessions understand the context."
+     },
+     "when": {
+      "type": "string",
+      "description": "When or where to apply this rule. Optional."
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Topic tags for search filtering. Examples: ['instagram', 'trading', 'admin']"
+     },
+     "priority": {
+      "type": "integer",
+      "enum": [
+       1,
+       2,
+       3
+      ],
+      "default": 2,
+      "description": "1=low (background context), 2=medium (apply when relevant, default), 3=critical (always loaded into every session)"
+     }
+    }
+   }
+  },
+  {
+   "name": "list_memories",
+   "description": "List all memories, returning slug + rule for each (compact view). CALL THIS to browse what is stored, discover memory slugs, or audit the full memory set. For finding relevant memories on a specific topic, use search_memories instead \u2014 it is faster and ranked by relevance.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "type_filter": {
+      "type": "string",
+      "enum": [
+       "fb",
+       "us",
+       "pj",
+       "rf",
+       "cn",
+       "lx"
+      ],
+      "description": "Filter by type: fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+     },
+     "min_priority": {
+      "type": "integer",
+      "enum": [
+       1,
+       2,
+       3
+      ],
+      "default": 1,
+      "description": "Only return memories at or above this priority. 1=all, 2=medium and critical only, 3=critical only."
+     }
+    }
+   }
   }
+ ],
+ "provider_wrappers": {
+  "openai": {
+   "_comment": "Wrap each tool as: { type: 'function', function: { name, description, parameters } }",
+   "example": {
+    "type": "function",
+    "function": {
+     "name": "search_memories",
+     "description": "...",
+     "parameters": {
+      "...": "same as above"
+     }
+    }
+   }
+  },
+  "anthropic": {
+   "_comment": "Use tools directly: { name, description, input_schema: { type: 'object', properties, required } }"
+  },
+  "gemini": {
+   "_comment": "Use FunctionDeclaration: { name, description, parameters: { type: 'OBJECT', properties, required } }. Enum values go in: { type: 'STRING', enum: [...] }"
+  }
+ }
 }

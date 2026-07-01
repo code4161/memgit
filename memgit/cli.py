@@ -192,16 +192,138 @@ def status():
         total = len(index)
         console.print(f'\n[dim]Clean — {total} mnemonic{"s" if total != 1 else ""} committed[/dim]')
 
+    hint = repo.maintenance_hint()
+    if hint:
+        console.print(f'[yellow]maintenance:[/yellow] {hint}')
+
+
+# ── resume ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option('--checkpoints', '-n', default=5, help='Recent checkpoints to include')
+@click.option('--recent', '-r', default=10, help='Recently updated memories to include')
+@click.option('--plain', is_flag=True, help='Plain text (for hooks / piping into an AI context)')
+@click.option('--json', 'fmt_json', is_flag=True, help='JSON output')
+def resume(checkpoints, recent, plain, fmt_json):
+    """Show where you left off — the session-start primer.
+
+    Prints the last checkpoints, staged work in flight, recently updated
+    memories, and critical rules. Designed to orient an AI agent (or you)
+    at the start of a session. Wire it into Claude Code automatically with
+    `memgit setup hooks`.
+    """
+    import json as _j
+    repo = _require_repo()
+    ctx = repo.resume_context(checkpoints=checkpoints, recent=recent)
+
+    if fmt_json:
+        print(_j.dumps(ctx, indent=2, default=str))
+        return
+
+    if plain:
+        print(_format_resume_plain(ctx))
+        return
+
+    console.print(f'\n[bold cyan]memgit resume[/bold cyan] — thread [cyan]{ctx["thread"]}[/cyan] '
+                  f'@ [yellow]{ctx["head"] or "none"}[/yellow]  '
+                  f'[dim]({ctx["checkpoint_count"]} checkpoints, {ctx["total_memories"]} memories)[/dim]\n')
+
+    st = ctx['staged']
+    if st['new'] or st['updated'] or st['removed']:
+        console.print('[bold]Work in flight (staged, not committed):[/bold]')
+        for s in st['new']:
+            console.print(f'  [green]new[/green]      {s}')
+        for s in st['updated']:
+            console.print(f'  [yellow]updated[/yellow]  {s}')
+        for s in st['removed']:
+            console.print(f'  [red]removed[/red]  {s}')
+        console.print()
+
+    console.print('[bold]Last checkpoints:[/bold]')
+    for ck in ctx['checkpoints']:
+        ts = ck['timestamp'].strftime('%Y-%m-%d %H:%M')
+        delta = f"+{ck['added']} ~{ck['modified']} -{ck['removed']}"
+        console.print(f'  [yellow]{ck["sha"]}[/yellow]  {ts}  {ck["message"]}  [dim]{delta} · {ck["author"]}[/dim]')
+
+    if ctx['recent_memories']:
+        console.print('\n[bold]Recently updated memories:[/bold]')
+        for m in ctx['recent_memories']:
+            ts = m['timestamp'].strftime('%m-%d')
+            rule = m['rule'][:80] + '..' if len(m['rule']) > 80 else m['rule']
+            console.print(f'  [cyan]{m["slug"]}[/cyan] [dim][{m["type"]} {ts}][/dim] {rule}')
+
+    if ctx['critical_memories']:
+        console.print('\n[bold red]Critical rules (always apply):[/bold red]')
+        for m in ctx['critical_memories']:
+            console.print(f'  [red]![/red] [cyan]{m["slug"]}[/cyan]  {m["rule"]}')
+    if ctx.get('maintenance'):
+        console.print(f'\n[yellow]maintenance:[/yellow] {ctx["maintenance"]}')
+    console.print()
+
+
+def _format_resume_plain(ctx: dict) -> str:
+    """Plain-text resume digest — injected into AI context by the SessionStart hook.
+
+    Deliberately bounded (~300-600 tokens regardless of store size): rules are
+    truncated and the critical list is capped, because this text is paid for
+    at the start of EVERY session. Full text is one get_memory call away.
+    """
+    def clip(text: str, n: int = 200) -> str:
+        return text if len(text) <= n else text[:n - 1] + '…'
+
+    lines = [
+        f'# memgit resume — thread {ctx["thread"]} @ {ctx["head"] or "none"} '
+        f'({ctx["checkpoint_count"]} checkpoints, {ctx["total_memories"]} memories)',
+    ]
+    st = ctx['staged']
+    if st['new'] or st['updated'] or st['removed']:
+        lines.append('')
+        lines.append('## Work in flight (staged, not committed)')
+        for s in st['new']:
+            lines.append(f'- new: {s}')
+        for s in st['updated']:
+            lines.append(f'- updated: {s}')
+        for s in st['removed']:
+            lines.append(f'- removed: {s}')
+    if ctx['checkpoints']:
+        lines.append('')
+        lines.append('## Last checkpoints (newest first)')
+        for ck in ctx['checkpoints']:
+            ts = ck['timestamp'].strftime('%Y-%m-%d %H:%M')
+            lines.append(f'- {ck["sha"]} {ts} [{ck["author"]}] {clip(ck["message"], 160)}')
+    if ctx['recent_memories']:
+        lines.append('')
+        lines.append('## Recently updated memories')
+        for m in ctx['recent_memories']:
+            ts = m['timestamp'].strftime('%Y-%m-%d')
+            lines.append(f'- {m["slug"]} ({m["type"]}, {ts}): {clip(m["rule"], 160)}')
+    if ctx['critical_memories']:
+        lines.append('')
+        lines.append('## Critical rules — always apply')
+        crit = ctx['critical_memories']
+        for m in crit[:20]:
+            lines.append(f'- {m["slug"]}: {clip(m["rule"])}')
+        if len(crit) > 20:
+            lines.append(f'- …and {len(crit) - 20} more — run list_memories with min_priority=3')
+    if ctx.get('maintenance'):
+        lines.append('')
+        lines.append(f'## Maintenance needed\n- {ctx["maintenance"]}')
+    lines.append('')
+    lines.append('(Check work-in-flight and the last checkpoints before assuming state; '
+                 'use memgit search for anything task-specific.)')
+    return '\n'.join(lines)
+
 
 # ── log ───────────────────────────────────────────────────────────────────────
 
 @cli.command()
 @click.option('--limit', '-n', default=10, help='Max checkpoints to show')
+@click.option('--skip', default=0, help='Skip the newest N checkpoints (pagination)')
 @click.option('--oneline', is_flag=True, help='Compact one-line format')
-def log(limit, oneline):
+def log(limit, skip, oneline):
     """Show checkpoint history."""
     repo = _require_repo()
-    checkpoints = repo.log(limit=limit)
+    checkpoints = repo.log(limit=limit, skip=skip)
     if not checkpoints:
         console.print('[dim]No checkpoints yet.[/dim]')
         return
@@ -805,7 +927,8 @@ def daemon_status(port):
 # ── stats ─────────────────────────────────────────────────────────────────────
 
 @cli.command()
-def stats():
+@click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output (token-cheap for AI callers)')
+def stats(fmt_json):
     """Show token-savings proof and store health metrics.
 
     Compares loading ALL memories (the claude.md / dump approach) against
@@ -814,6 +937,12 @@ def stats():
     """
     repo = _require_repo()
     s = repo.stats()
+
+    if fmt_json:
+        import json as _j
+        s['maintenance'] = repo.maintenance_hint(s.get('checkpoint_count'))
+        print(_j.dumps(s, default=str))
+        return
 
     if s.get('total', 0) == 0:
         console.print('[yellow]No memories yet. Run `memgit sync` or `memgit add` first.[/yellow]')
@@ -925,7 +1054,8 @@ def stats():
 @click.option('--older-than', 'older_than_days', type=int, default=None, metavar='DAYS',
               help='Squash all checkpoints older than N days')
 @click.option('--dry-run', is_flag=True, help='Preview what would be squashed without changing anything')
-def squash(keep_last, older_than_days, dry_run):
+@click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output (token-cheap for AI callers)')
+def squash(keep_last, older_than_days, dry_run, fmt_json):
     """Squash old checkpoints to keep history manageable at scale.
 
     Like `git rebase --autosquash`, but for memory history. Collapses old
@@ -948,6 +1078,11 @@ def squash(keep_last, older_than_days, dry_run):
         dry_run=dry_run,
     )
 
+    if fmt_json:
+        import json as _j
+        print(_j.dumps(result))
+        return
+
     kept = result['kept']
     squashed = result['squashed']
 
@@ -963,6 +1098,105 @@ def squash(keep_last, older_than_days, dry_run):
         console.print(f'[green]squash[/green]  {squashed} old checkpoints '
                       f'→ baseline at {result["baseline_ts"]}  '
                       f'[dim]({kept} kept, new HEAD: {result.get("new_head", "?")})[/dim]')
+
+
+# ── gc ────────────────────────────────────────────────────────────────────────
+
+def _human_bytes(n: int) -> str:
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or unit == 'GB':
+            return f'{n:.1f} {unit}' if unit != 'B' else f'{n} B'
+        n /= 1024
+    return f'{n} B'
+
+
+@cli.command()
+@click.option('--dry-run', is_flag=True, help='Report what would be deleted without deleting')
+@click.option('--squash-keep', type=int, default=None, metavar='N',
+              help='First squash history to the last N checkpoints, then sweep')
+@click.option('--reflog-keep', type=int, default=1000, show_default=True,
+              help='Max reflog entries to keep per thread')
+@click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output (token-cheap for AI callers)')
+def gc(dry_run, squash_keep, reflog_keep, fmt_json):
+    """Reclaim disk space — delete unreachable objects and trim reflogs.
+
+    Only provably-unreachable objects are swept; reachable history and
+    staged memories are never touched. Squashed-away checkpoints keep a
+    one-line record in .memgit/logs/archive/ (never deleted).
+
+    Typical maintenance:
+
+      memgit gc --dry-run                Preview
+
+      memgit gc                          Sweep orphans (safe anytime)
+
+      memgit gc --squash-keep 200        Compact history, then sweep
+    """
+    repo = _require_repo()
+
+    sq = None
+    if squash_keep is not None:
+        sq = repo.squash(keep_last=squash_keep, dry_run=dry_run)
+        if sq['squashed'] and not fmt_json:
+            verb = 'would squash' if dry_run else 'squashed'
+            console.print(f'[green]squash[/green]  {verb} {sq["squashed"]} checkpoints '
+                          f'→ {sq["kept"]} kept')
+
+    r = repo.gc(dry_run=dry_run, reflog_keep=reflog_keep)
+
+    if fmt_json:
+        import json as _j
+        if sq is not None:
+            r['squash'] = sq
+        print(_j.dumps(r))
+        return
+
+    verb = 'would delete' if dry_run else 'deleted'
+    console.print(f'[green]gc[/green]  {verb} [bold]{r["objects_deleted"]}[/bold] unreachable objects '
+                  f'({_human_bytes(r["bytes_freed"])} freed), '
+                  f'trimmed {r["reflog_entries_trimmed"]} reflog entries')
+    console.print(f'    [dim]store: {r["objects_after"]} objects, '
+                  f'{_human_bytes(r["bytes_before"] - (0 if dry_run else r["bytes_freed"]))}[/dim]')
+
+
+# ── merge ─────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument('thread_name')
+@click.option('--message', '-m', default=None, help='Merge checkpoint message')
+def merge(thread_name, message):
+    """Merge another thread's memories into the current thread.
+
+    Three-way merge against the common ancestor — the multi-agent workflow:
+    each agent works on its own thread (memgit thread create agent-1), then
+    the results merge back:
+
+      memgit merge agent-1
+
+    Conflicts (same memory changed on both sides) resolve to the newest
+    version; an edit always beats a delete. Both histories are preserved.
+    """
+    repo = _require_repo()
+    try:
+        sha, conflicts, d = repo.merge_thread(thread_name, message=message)
+    except ValueError as e:
+        err.print(f'[red]{e}[/red]')
+        sys.exit(1)
+
+    for s in d.added:
+        console.print(f'[green]+ {s}[/green]')
+    for s in d.modified:
+        console.print(f'[yellow]~ {s}[/yellow]')
+    for s in d.removed:
+        console.print(f'[red]- {s}[/red]')
+    for s in conflicts:
+        console.print(f'[magenta]⚡ {s}[/magenta]  [dim](both sides changed — newest kept)[/dim]')
+
+    if sha is None:
+        console.print('[dim]Already up to date — nothing to merge.[/dim]')
+    else:
+        console.print(f'[green]merge[/green]  {thread_name} → {repo.current_thread()}  '
+                      f'checkpoint [cyan]{sha[:8]}[/cyan]')
 
 
 # ── git ───────────────────────────────────────────────────────────────────────
@@ -1107,24 +1341,31 @@ import shutil as _shutil
 import json as _json
 
 
-def _memgit_cmd() -> list[str]:
-    """Return the best command to launch `memgit serve`.
+def _memgit_base_cmd() -> list[str]:
+    """Return the best command prefix to invoke this memgit installation.
 
     Priority: running binary path > which > python -m fallback.
     sys.argv[0] ensures we register the exact binary that ran setup,
-    not whatever 'memgit' is first in PATH.
+    not whatever 'memgit' is first in PATH. A .py argv[0] (python -m runs)
+    is not directly executable — fall through to the interpreter form.
     """
     import sys as _sys, os as _os
     argv0 = _sys.argv[0]
-    if _os.path.isabs(argv0) and _os.path.isfile(argv0):
-        return [argv0, 'serve']
-    resolved = _os.path.realpath(argv0) if argv0 else None
-    if resolved and _os.path.isfile(resolved):
-        return [resolved, 'serve']
+    if not argv0.endswith('.py'):
+        if _os.path.isabs(argv0) and _os.path.isfile(argv0):
+            return [argv0]
+        resolved = _os.path.realpath(argv0) if argv0 else None
+        if resolved and _os.path.isfile(resolved):
+            return [resolved]
     binary = _shutil.which('memgit')
     if binary:
-        return [binary, 'serve']
-    return [_sys.executable, '-m', 'memgit.cli', 'serve']
+        return [binary]
+    return [_sys.executable, '-m', 'memgit.cli']
+
+
+def _memgit_cmd() -> list[str]:
+    """Return the best command to launch `memgit serve`."""
+    return _memgit_base_cmd() + ['serve']
 
 
 def _mcp_server_entry() -> dict:
@@ -1250,6 +1491,12 @@ def _all_targets():
             home / '.continue' / 'config.json',
             _patch_continue,
             None,
+        ),
+        (
+            'Gemini CLI',
+            home / '.gemini' / 'settings.json',
+            _patch_mcp_servers,
+            home / '.gemini',
         ),
     ]
 
@@ -1463,9 +1710,85 @@ def setup_continue(dry_run):
     _run_target('Continue.dev', path, _patch_continue, dry_run)
 
 
+@setup.command('gemini-cli')
+@click.option('--dry-run', is_flag=True)
+def setup_gemini_cli(dry_run):
+    """Register with Gemini CLI (~/.gemini/settings.json)."""
+    path = Path.home() / '.gemini' / 'settings.json'
+    _run_target('Gemini CLI', path, _patch_mcp_servers, dry_run)
+
+
+@setup.command('hooks')
+@click.option('--remove', is_flag=True, help='Uninstall the memgit SessionStart hook')
+@click.option('--dry-run', is_flag=True, help='Show the change without writing')
+def setup_hooks(remove, dry_run):
+    """Install a Claude Code SessionStart hook that injects `memgit resume`.
+
+    After this, every new Claude Code session (including /clear and resume)
+    automatically starts with your last checkpoints, work in flight, and
+    critical rules in context — the model doesn't have to remember to look.
+
+    Hooks live in ~/.claude/settings.json (unlike MCP servers, which live
+    in ~/.claude.json).
+    """
+    import shlex
+    settings_path = Path.home() / '.claude' / 'settings.json'
+    base = ' '.join(shlex.quote(p) for p in _memgit_base_cmd())
+    # `|| true`: a broken store must never block session start
+    hook_command = f'{base} resume --plain 2>/dev/null || true'
+
+    if settings_path.exists():
+        try:
+            data = _json.loads(settings_path.read_text(encoding='utf-8'))
+        except _json.JSONDecodeError:
+            err.print(f'[red]{settings_path} is not valid JSON — fix it manually, then re-run.[/red]')
+            sys.exit(1)
+    else:
+        data = {}
+
+    hooks = data.setdefault('hooks', {})
+    session_start = hooks.setdefault('SessionStart', [])
+
+    def _is_memgit_hook(h: dict) -> bool:
+        return any('memgit resume' in inner.get('command', '')
+                   for inner in h.get('hooks', []) if isinstance(inner, dict))
+
+    existing = [h for h in session_start if isinstance(h, dict) and _is_memgit_hook(h)]
+
+    if remove:
+        if not existing:
+            console.print('[dim]No memgit SessionStart hook installed.[/dim]')
+            return
+        session_start[:] = [h for h in session_start if h not in existing]
+        if not session_start:
+            hooks.pop('SessionStart', None)
+        if not hooks:
+            data.pop('hooks', None)
+        if not dry_run:
+            _write_json_safe(settings_path, data)
+        console.print(f'[yellow]removed[/yellow] memgit SessionStart hook from {settings_path}'
+                      + (' [dim](dry run)[/dim]' if dry_run else ''))
+        return
+
+    entry = {'hooks': [{'type': 'command', 'command': hook_command}]}
+    if existing:
+        if existing[0] == entry and len(existing) == 1:
+            console.print(f'[green]✓[/green] already installed in {settings_path}')
+            return
+        session_start[:] = [h for h in session_start if h not in existing]
+    session_start.append(entry)
+
+    if not dry_run:
+        _write_json_safe(settings_path, data)
+    console.print(f'[green]✓[/green] SessionStart hook installed in {settings_path}'
+                  + (' [dim](dry run)[/dim]' if dry_run else ''))
+    console.print(f'  [dim]{hook_command}[/dim]')
+    console.print('[dim]Every new Claude Code session now starts with your memgit resume digest.[/dim]')
+
+
 @setup.command('print-config')
 @click.argument('tool', default='generic',
-                type=click.Choice(['claude-code', 'claude-desktop', 'cursor', 'windsurf', 'continue', 'generic']))
+                type=click.Choice(['claude-code', 'claude-desktop', 'cursor', 'windsurf', 'continue', 'gemini-cli', 'generic']))
 def setup_print_config(tool):
     """Print the config snippet to copy-paste manually.
 
@@ -1481,3 +1804,9 @@ def setup_print_config(tool):
     console.print(f'\n[bold]Config snippet for {tool}:[/bold]\n')
     console.print(snippet)
     console.print('\n[dim]Merge this into your tool\'s config file.[/dim]')
+
+
+if __name__ == '__main__':
+    # Required for the `python -m memgit.cli` fallback used by _memgit_cmd();
+    # without it the module imports and exits silently.
+    cli()

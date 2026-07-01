@@ -1,10 +1,13 @@
 """Repository operations — init, add, commit, log, diff, show, squash, flat-export."""
 
 from __future__ import annotations
+import json
 import os
 import subprocess
+import time
 import tomllib
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,12 +29,94 @@ def default_store_candidates() -> list[Path]:
     ]
 
 
+#: A lock older than this is considered abandoned (crashed process) and broken.
+LOCK_STALE_SECONDS = 60.0
+#: How long a writer waits for the lock before giving up.
+LOCK_TIMEOUT_SECONDS = float(os.environ.get('MEMGIT_LOCK_TIMEOUT', '10'))
+
+
+class LockTimeout(RuntimeError):
+    """Could not acquire the store lock — another agent holds it."""
+
+
 class Repository:
     """A memgit repository rooted at `.memgit/`."""
 
     def __init__(self, memgit_dir: Path):
         self.path = memgit_dir
         self.store = ObjectStore(memgit_dir)
+        self._lock_depth = 0  # same-process re-entrancy for the store lock
+
+    # ── Store lock (multi-agent write safety) ─────────────────────────────────
+
+    @property
+    def _lock_path(self) -> Path:
+        return self.path / 'memgit.lock'
+
+    def _try_break_stale_lock(self):
+        """Remove the lockfile if its owner is gone or it has aged out."""
+        lp = self._lock_path
+        try:
+            raw = lp.read_text().split()
+            pid = int(raw[0]) if raw else 0
+            age = time.time() - lp.stat().st_mtime
+        except (OSError, ValueError):
+            return
+        pid_alive = False
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+                pid_alive = True
+            except OSError:
+                pid_alive = False
+        if not pid_alive or age > LOCK_STALE_SECONDS:
+            try:
+                lp.unlink()
+            except OSError:
+                pass
+
+    @contextmanager
+    def _lock(self, timeout: float = None):
+        """Advisory whole-store write lock (git-style lockfile).
+
+        Serializes index/ref mutations across processes so concurrent agents
+        can't interleave read-modify-write cycles. Re-entrant within one
+        Repository instance. Raises LockTimeout if the lock stays held.
+        """
+        if self._lock_depth > 0:
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
+
+        timeout = LOCK_TIMEOUT_SECONDS if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f'{os.getpid()} {time.time():.0f}\n'.encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                self._try_break_stale_lock()
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(
+                        f'store locked by another process ({self._lock_path}) — '
+                        f'retried for {timeout:.0f}s'
+                    )
+                time.sleep(0.05)
+
+        self._lock_depth = 1
+        try:
+            yield
+        finally:
+            self._lock_depth = 0
+            try:
+                self._lock_path.unlink()
+            except OSError:
+                pass
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 
@@ -135,13 +220,35 @@ class Repository:
                 result[parts[0]] = parts[1]
         return result
 
-    def _write_index(self, index: dict[str, str]):
+    def get_index_base(self) -> Optional[str]:
+        """The checkpoint SHA the staging index was built from.
+
+        Read from the `# checkpoint:` header. Used by commit() to detect that
+        another agent moved HEAD since this index was staged (→ auto-merge).
+        """
+        idx_path = self.path / 'TOON_INDEX'
+        if not idx_path.exists():
+            return None
+        for line in idx_path.read_text().splitlines():
+            if line.startswith('# checkpoint:'):
+                sha = line.split(':', 1)[1].strip()
+                return None if sha in ('', 'none') else sha
+        return None
+
+    def _write_index(self, index: dict[str, str], base_sha: Optional[str] = 'HEAD'):
+        """Write TOON_INDEX.
+
+        base_sha: checkpoint the index derives from. Default 'HEAD' stamps the
+        current head; staging ops pass the preserved base so a concurrent
+        commit by another agent is still detected at commit time.
+        """
         thread = self.current_thread()
-        head = self.head_sha() or 'none'
+        if base_sha == 'HEAD':
+            base_sha = self.head_sha()
         lines = [
             '# TOON_INDEX v1',
             f'# thread: {thread}',
-            f'# checkpoint: {head}',
+            f'# checkpoint: {base_sha or "none"}',
         ]
         for slug in sorted(index):
             lines.append(f'{slug} {index[slug]}')
@@ -161,19 +268,23 @@ class Repository:
 
     def add(self, m: Mnemonic) -> str:
         """Write a mnemonic and stage it in the index. Returns SHA."""
-        sha = self.store.write_mnemonic(m)
-        index = self.get_index()
-        index[m.slug] = sha
-        self._write_index(index)
+        with self._lock():
+            sha = self.store.write_mnemonic(m)
+            index = self.get_index()
+            base = self.get_index_base()
+            index[m.slug] = sha
+            self._write_index(index, base_sha=base)
         return sha
 
     def remove(self, slug: str) -> bool:
         """Remove a slug from the index (does not delete objects). Returns True if it existed."""
-        index = self.get_index()
-        if slug not in index:
-            return False
-        del index[slug]
-        self._write_index(index)
+        with self._lock():
+            index = self.get_index()
+            if slug not in index:
+                return False
+            base = self.get_index_base()
+            del index[slug]
+            self._write_index(index, base_sha=base)
         return True
 
     def get(self, slug: str) -> Optional[Mnemonic]:
@@ -193,20 +304,97 @@ class Repository:
 
     # ── Commit ────────────────────────────────────────────────────────────────
 
+    def _mindstate_map(self, ck_sha: Optional[str]) -> dict[str, str]:
+        """slug → mnem_sha map for a checkpoint's MindState ({} for None)."""
+        if not ck_sha:
+            return {}
+        try:
+            ck = self.store.read_checkpoint(ck_sha)
+            ms = self.store.read_mindstate(ck.mindstate_sha)
+            return {e.slug: e.mnem_sha for e in ms.entries}
+        except Exception:
+            return {}
+
+    def _merge_maps(
+        self,
+        base: dict[str, str],
+        theirs: dict[str, str],
+        ours: dict[str, str],
+    ) -> tuple[dict[str, str], list[str]]:
+        """Three-way merge of slug→sha maps. Returns (merged, conflicted_slugs).
+
+        Standard rules: a side that didn't touch a slug defers to the side
+        that did; both touching it identically is trivial; both touching it
+        differently is a conflict, resolved by newest mnemonic timestamp
+        (delete loses to an edit).
+        """
+        merged: dict[str, str] = {}
+        conflicts: list[str] = []
+        for slug in set(base) | set(theirs) | set(ours):
+            b, t, o = base.get(slug), theirs.get(slug), ours.get(slug)
+            if t == o:
+                winner = o
+            elif t == b:      # only we changed it
+                winner = o
+            elif o == b:      # only they changed it
+                winner = t
+            else:             # both changed → newest mnemonic wins; edit beats delete
+                conflicts.append(slug)
+                if t is None:
+                    winner = o
+                elif o is None:
+                    winner = t
+                else:
+                    try:
+                        t_ts = self.store.read_mnemonic(t).timestamp
+                        o_ts = self.store.read_mnemonic(o).timestamp
+                        winner = t if t_ts > o_ts else o
+                    except Exception:
+                        winner = o
+            if winner is not None:
+                merged[slug] = winner
+        return merged, sorted(conflicts)
+
     def commit(self, message: str = None, trigger: str = 'explicit') -> Optional[str]:
-        """Checkpoint the current index. Returns checkpoint SHA or None if no changes."""
+        """Checkpoint the current index. Returns checkpoint SHA or None if no changes.
+
+        Multi-agent safe: runs under the store lock, and if HEAD moved past the
+        index's base checkpoint (another agent committed since this index was
+        staged) the two states are three-way merged instead of clobbered.
+        """
+        with self._lock():
+            return self._commit_locked(message, trigger)
+
+    def _commit_locked(self, message: str = None, trigger: str = 'explicit') -> Optional[str]:
         now = datetime.now(timezone.utc)
         index = self.get_index()
+
+        # CAS check: did another agent move HEAD since this index was staged?
+        base = self.get_index_base()
+        head_now = self.head_sha()
+        merged_note = ''
+        if head_now and base != head_now:
+            base_map = self._mindstate_map(base)
+            head_map = self._mindstate_map(head_now)
+            index, conflicts = self._merge_maps(base_map, head_map, index)
+            merged_note = f'(auto-merged over {head_now[:8]}'
+            merged_note += f', {len(conflicts)} conflict{"s" if len(conflicts) != 1 else ""} resolved) ' \
+                if conflicts else ') '
+            if trigger == 'explicit':
+                trigger = 'merge'
 
         entries = [MindStateEntry(slug=s, mnem_sha=h) for s, h in index.items()]
         new_ms = MindState(timestamp=now, entries=entries)
         new_ms_sha = self.store.mindstate_sha(new_ms)
 
         # Compare against HEAD
-        head = self.head_sha()
-        if head:
-            old_ck = self.store.read_checkpoint(head)
+        if head_now:
+            old_ck = self.store.read_checkpoint(head_now)
             if old_ck.mindstate_sha == new_ms_sha:
+                if merged_note:
+                    # Merge resolved to exactly HEAD's state — adopt it so the
+                    # index base is fresh and status reads clean.
+                    self._rebuild_index()
                 return None  # nothing changed
             old_ms = self.store.read_mindstate(old_ck.mindstate_sha)
         else:
@@ -240,6 +428,9 @@ class Repository:
                 parts.append(f'Removed {len(diff.removed)}: {sample}{suffix}')
             message = '; '.join(parts) or 'No changes'
 
+        if merged_note:
+            message = merged_note + message
+
         ck = Checkpoint(
             mindstate_sha=new_ms_sha,
             timestamp=now,
@@ -247,28 +438,105 @@ class Repository:
             message=message,
             author=self._author(),
             session_id=str(uuid.uuid4()),
-            parent_sha=head,
+            parent_sha=head_now,
             diff_summary=diff,
         )
         ck_sha = self.store.write_checkpoint(ck)
-        self._set_ref(self.current_thread(), ck_sha)
+        thread = self.current_thread()
+        self._set_ref(thread, ck_sha)
         self._rebuild_index()
+
+        # Incremental chain-count update — O(1) instead of a history walk
+        from .toon import format_ts
+        cached = self._read_counts().get(thread)
+        if head_now is None:
+            self._update_count_cache(thread, ck_sha, 1, format_ts(now))
+        elif cached and cached.get('head') == head_now:
+            self._update_count_cache(
+                thread, ck_sha, int(cached['count']) + 1,
+                cached.get('first_ts', format_ts(now)),
+            )
         return ck_sha
 
     # ── History ───────────────────────────────────────────────────────────────
 
-    def log(self, limit: int = 10, thread: str = None) -> list[Checkpoint]:
-        """Return checkpoint chain from HEAD, newest first."""
+    def log(self, limit: int = 10, thread: str = None, skip: int = 0) -> list[Checkpoint]:
+        """Return checkpoint chain from HEAD, newest first.
+
+        skip: number of newest checkpoints to page past (git log --skip).
+        """
         result = []
         sha = self.head_sha(thread)
+        skipped = 0
         while sha and len(result) < limit:
             try:
                 ck = self.store.read_checkpoint(sha)
             except Exception:
                 break
-            result.append(ck)
+            if skipped < skip:
+                skipped += 1
+            else:
+                result.append(ck)
             sha = ck.parent_sha
         return result
+
+    # ── Chain-count cache (long-history scaling) ──────────────────────────────
+
+    @property
+    def _counts_path(self) -> Path:
+        return self.path / 'cache' / 'counts.json'
+
+    def _read_counts(self) -> dict:
+        try:
+            return json.loads(self._counts_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_counts(self, counts: dict):
+        self._counts_path.parent.mkdir(parents=True, exist_ok=True)
+        self._counts_path.write_text(json.dumps(counts))
+
+    def _update_count_cache(self, thread: str, head: str, count: int, first_ts: str):
+        counts = self._read_counts()
+        counts[thread] = {'head': head, 'count': count, 'first_ts': first_ts}
+        self._write_counts(counts)
+
+    def chain_info(self, thread: str = None) -> tuple[int, Optional[datetime]]:
+        """(checkpoint count, root timestamp) for a thread, O(1) when cached.
+
+        The cache is keyed to the current head SHA — any mismatch (older
+        version wrote history, squash, manual surgery) falls back to a full
+        walk and repopulates it.
+        """
+        thread = thread or self.current_thread()
+        head = self.head_sha(thread)
+        if head is None:
+            return 0, None
+
+        cached = self._read_counts().get(thread)
+        if cached and cached.get('head') == head:
+            try:
+                from .toon import _parse_ts
+                return int(cached['count']), _parse_ts(cached['first_ts'])
+            except (KeyError, ValueError):
+                pass
+
+        # Cache miss — full walk, then repopulate
+        count = 0
+        first_ts = None
+        sha = head
+        while sha:
+            try:
+                ck = self.store.read_checkpoint(sha)
+            except Exception:
+                break
+            count += 1
+            first_ts = ck.timestamp
+            sha = ck.parent_sha
+        if first_ts is not None:
+            from .toon import format_ts
+            self._update_count_cache(thread, head, count, format_ts(first_ts))
+        return count, first_ts
 
     def diff(self, sha1: str = None, sha2: str = None) -> DiffSummary:
         """Diff two checkpoints. Defaults to HEAD^ → HEAD."""
@@ -366,17 +634,17 @@ class Repository:
                 except Exception:
                     return None
             return sha
-        # SHA prefix — walk the chain; ambiguous prefixes resolve to None
-        matches: list[str] = []
-        sha = self.head_sha()
-        while sha:
-            if sha.startswith(ref):
-                matches.append(sha)
-            try:
-                sha = self.store.read_checkpoint(sha).parent_sha
-            except Exception:
-                break
-        return matches[0] if len(matches) == 1 else None
+        # SHA prefix — resolve via the object store's fan-out directories
+        # (O(1) in history length; the old chain walk was O(n) per lookup).
+        if len(ref) >= 4 and all(c in '0123456789abcdef' for c in ref.lower()):
+            full = self.store.resolve_sha(ref.lower())
+            if full and self.store.exists(full):
+                try:
+                    self.store.read_checkpoint(full)  # must be a checkpoint
+                    return full
+                except Exception:
+                    return None
+        return None
 
     def rollback(self, ref: str, dry_run: bool = False) -> tuple[Optional[str], DiffSummary]:
         """Restore the memory state to checkpoint `ref` (git-revert style).
@@ -403,10 +671,11 @@ class Repository:
         if dry_run:
             return None, diff
 
-        self._write_index(target_index)
-        new_sha = self.commit(
-            message=f'rollback to {target_sha[:8]}', trigger='rollback',
-        )
+        with self._lock():
+            self._write_index(target_index)
+            new_sha = self.commit(
+                message=f'rollback to {target_sha[:8]}', trigger='rollback',
+            )
         if new_sha and self.memories_dir.exists():
             self.write_flat()
         return new_sha, diff
@@ -439,8 +708,75 @@ class Repository:
         ref = self.path / 'refs' / 'threads' / name
         if not ref.exists():
             raise ValueError(f'Thread {name!r} does not exist')
-        (self.path / 'HEAD').write_text(f'threads/{name}\n')
-        self._rebuild_index()
+        with self._lock():
+            (self.path / 'HEAD').write_text(f'threads/{name}\n')
+            self._rebuild_index()
+
+    # ── Merge (multi-agent: thread-per-agent workflows) ───────────────────────
+
+    def merge_base(self, sha_a: str, sha_b: str) -> Optional[str]:
+        """Nearest common ancestor of two checkpoints (None if unrelated)."""
+        ancestors: set[str] = set()
+        sha = sha_a
+        while sha:
+            ancestors.add(sha)
+            try:
+                sha = self.store.read_checkpoint(sha).parent_sha
+            except Exception:
+                break
+        sha = sha_b
+        while sha:
+            if sha in ancestors:
+                return sha
+            try:
+                sha = self.store.read_checkpoint(sha).parent_sha
+            except Exception:
+                break
+        return None
+
+    def merge_thread(self, other: str, message: str = None) -> tuple[Optional[str], list[str], DiffSummary]:
+        """Merge another thread's memory state into the current thread.
+
+        Three-way merge against the nearest common ancestor; conflicts resolve
+        to the newest mnemonic (edit beats delete). Returns
+        (new_checkpoint_sha_or_None, conflicted_slugs, diff_vs_before).
+        History of both threads is preserved — this only advances the current
+        thread with a merge checkpoint.
+        """
+        theirs_head = self.head_sha(other)
+        if theirs_head is None:
+            raise ValueError(f'Thread {other!r} does not exist')
+
+        with self._lock():
+            ours_head = self.head_sha()
+            if ours_head is None:
+                raise ValueError('Current thread has no checkpoint')
+
+            base_sha = self.merge_base(ours_head, theirs_head)
+            base_map = self._mindstate_map(base_sha)
+            ours_map = self.get_index()          # includes staged changes
+            theirs_map = self._mindstate_map(theirs_head)
+
+            merged, conflicts = self._merge_maps(base_map, theirs_map, ours_map)
+
+            before = dict(ours_map)
+            diff = DiffSummary(
+                added=[s for s in merged if s not in before],
+                removed=[s for s in before if s not in merged],
+                modified=[s for s in before if s in merged and before[s] != merged[s]],
+                unchanged=[s for s in before if s in merged and before[s] == merged[s]],
+            )
+
+            self._write_index(merged)
+            msg = message or (
+                f'merge thread {other!r} ({theirs_head[:8]})'
+                + (f' — {len(conflicts)} conflict{"s" if len(conflicts) != 1 else ""} resolved'
+                   if conflicts else '')
+            )
+            new_sha = self.commit(message=msg, trigger='merge')
+        if new_sha and self.memories_dir.exists():
+            self.write_flat()
+        return new_sha, conflicts, diff
 
     # ── Integrity ─────────────────────────────────────────────────────────────
 
@@ -457,6 +793,202 @@ class Repository:
         if rebuild_index:
             self._rebuild_index()
         return errors
+
+    # ── Resume (session-start orientation) ────────────────────────────────────
+
+    def resume_context(self, checkpoints: int = 5, recent: int = 10) -> dict:
+        """A bounded digest of 'where we left off' for session start.
+
+        Structured for an AI agent picking up work: last checkpoints (what
+        happened), staged-but-uncommitted changes (work in flight), recently
+        updated memories (what changed lately), and critical memories (rules
+        that always apply). Deliberately compact — a resume primer, not a dump.
+        """
+        thread = self.current_thread()
+        head = self.head_sha()
+
+        # Recent checkpoint history
+        cks = self.log(limit=checkpoints)
+        ck_list = []
+        for ck in cks:
+            d = ck.diff_summary
+            ck_list.append({
+                'sha': (ck.sha or '')[:8],
+                'timestamp': ck.timestamp,
+                'trigger': ck.trigger,
+                'author': ck.author,
+                'message': ck.message,
+                'added': len(d.added) if d else 0,
+                'modified': len(d.modified) if d else 0,
+                'removed': len(d.removed) if d else 0,
+            })
+
+        # Staged (uncommitted) work in flight
+        index = self.get_index()
+        committed = self._mindstate_map(head)
+        staged = {
+            'new': sorted(s for s in index if s not in committed),
+            'updated': sorted(s for s in index if s in committed and index[s] != committed[s]),
+            'removed': sorted(s for s in committed if s not in index),
+        }
+
+        # Recently updated memories (by mnemonic timestamp) + critical set
+        mnemonics = self.list()
+        by_recency = sorted(mnemonics, key=lambda m: m.timestamp, reverse=True)
+        recent_mems = [
+            {'slug': m.slug, 'type': m.type_code, 'priority': m.priority,
+             'timestamp': m.timestamp, 'rule': m.rule}
+            for m in by_recency[:recent]
+        ]
+        critical = [
+            {'slug': m.slug, 'rule': m.rule}
+            for m in sorted(mnemonics, key=lambda m: m.slug) if m.priority == 3
+        ]
+
+        count, first_ts = self.chain_info(thread)
+        return {
+            'thread': thread,
+            'head': (head or '')[:8],
+            'checkpoint_count': count,
+            'history_since': first_ts,
+            'total_memories': len(mnemonics),
+            'checkpoints': ck_list,
+            'staged': staged,
+            'recent_memories': recent_mems,
+            'critical_memories': critical,
+            'maintenance': self.maintenance_hint(count),
+        }
+
+    #: Above this many checkpoints, surface a maintenance hint in resume/status.
+    MAINTENANCE_CHECKPOINTS = 500
+    #: Above this store size, surface a maintenance hint.
+    MAINTENANCE_BYTES = 50 * 1024 * 1024
+
+    def maintenance_hint(self, checkpoint_count: int = None) -> Optional[str]:
+        """One-line self-maintenance signal, or None while healthy.
+
+        The primary operator of memgit is an AI agent — it won't read docs to
+        learn when to compact, so the store tells it at the moment of use.
+        Cheap: cached count check first, then one stat per object file.
+        """
+        if checkpoint_count is None:
+            checkpoint_count, _ = self.chain_info()
+        if checkpoint_count > self.MAINTENANCE_CHECKPOINTS:
+            return (f'history has {checkpoint_count} checkpoints — run '
+                    f'`memgit gc --squash-keep {self.MAINTENANCE_CHECKPOINTS // 2}` '
+                    f'to compact (archives what it collapses; current state untouched)')
+        _, byts = self.disk_usage()
+        if byts > self.MAINTENANCE_BYTES:
+            return (f'store is {byts // (1024 * 1024)} MB — run `memgit gc` '
+                    f'to sweep unreachable objects')
+        return None
+
+    # ── GC (space reclamation) ────────────────────────────────────────────────
+
+    def disk_usage(self) -> tuple[int, int]:
+        """(object_count, total_bytes) of the object store."""
+        count = 0
+        total = 0
+        for p in self.store.objects_dir.rglob('*'):
+            if p.is_file():
+                count += 1
+                total += p.stat().st_size
+        return count, total
+
+    def _reachable_shas(self) -> set[str]:
+        """Every object SHA reachable from any thread ref, tag, or the staging index."""
+        reachable: set[str] = set()
+
+        ref_shas: list[str] = []
+        for refs_dir in (self.path / 'refs' / 'threads', self.path / 'refs' / 'tags'):
+            if refs_dir.is_dir():
+                for p in refs_dir.rglob('*'):
+                    if p.is_file():
+                        ref_shas.append(p.read_text().strip())
+
+        for start in ref_shas:
+            sha = start
+            while sha and sha not in reachable:
+                reachable.add(sha)
+                try:
+                    ck = self.store.read_checkpoint(sha)
+                except Exception:
+                    break
+                if ck.mindstate_sha and ck.mindstate_sha not in reachable:
+                    reachable.add(ck.mindstate_sha)
+                    try:
+                        ms = self.store.read_mindstate(ck.mindstate_sha)
+                        for e in ms.entries:
+                            reachable.add(e.mnem_sha)
+                    except Exception:
+                        pass
+                sha = ck.parent_sha
+
+        # Staged-but-uncommitted mnemonics must survive
+        for sha in self.get_index().values():
+            reachable.add(sha)
+        return reachable
+
+    def gc(self, dry_run: bool = False, reflog_keep: int = 1000) -> dict:
+        """Reclaim space: delete unreachable objects, trim reflogs.
+
+        Conservative by design — only sweeps objects that are provably
+        unreachable from every thread ref, tag, and the staging index.
+        Reachable history is never touched. Run after `squash` to actually
+        free the collapsed checkpoints' storage.
+        """
+        with self._lock():
+            reachable = self._reachable_shas()
+
+            objects_before, bytes_before = self.disk_usage()
+            deleted = 0
+            bytes_freed = 0
+            for p in sorted(self.store.objects_dir.rglob('*')):
+                if not p.is_file():
+                    continue
+                sha = p.parent.parent.name + p.parent.name + p.name
+                if sha in reachable:
+                    continue
+                deleted += 1
+                bytes_freed += p.stat().st_size
+                if not dry_run:
+                    p.unlink()
+
+            if not dry_run:
+                # Drop now-empty fan-out directories
+                for p in sorted(self.store.objects_dir.rglob('*'), reverse=True):
+                    if p.is_dir():
+                        try:
+                            p.rmdir()
+                        except OSError:
+                            pass
+
+            # Trim reflogs: cap length and drop entries whose checkpoint is gone
+            reflog_trimmed = 0
+            logs_dir = self.path / 'logs' / 'threads'
+            if logs_dir.is_dir():
+                for lf in logs_dir.rglob('*'):
+                    if not lf.is_file():
+                        continue
+                    lines = lf.read_text().splitlines()
+                    kept = [
+                        ln for ln in lines[-reflog_keep:]
+                        if len(ln.split()) == 2 and ln.split()[1] in reachable
+                    ]
+                    if len(kept) < len(lines):
+                        reflog_trimmed += len(lines) - len(kept)
+                        if not dry_run:
+                            lf.write_text('\n'.join(kept) + ('\n' if kept else ''))
+
+        return {
+            'objects_before': objects_before,
+            'objects_deleted': deleted,
+            'objects_after': objects_before - (0 if dry_run else deleted),
+            'bytes_before': bytes_before,
+            'bytes_freed': bytes_freed,
+            'reflog_entries_trimmed': reflog_trimmed,
+            'dry_run': dry_run,
+        }
 
     # ── Flat memories/ directory (git-native sync) ────────────────────────────
 
@@ -619,6 +1151,15 @@ class Repository:
 
         Returns dict with squash summary.
         """
+        with self._lock():
+            return self._squash_locked(keep_last, older_than_days, dry_run)
+
+    def _squash_locked(
+        self,
+        keep_last: int = None,
+        older_than_days: int = None,
+        dry_run: bool = False,
+    ) -> dict:
         all_cks = self.log(limit=10_000)
         if len(all_cks) < 3:
             return {'squashed': 0, 'kept': len(all_cks), 'dry_run': dry_run}
@@ -656,6 +1197,22 @@ class Repository:
 
         if dry_run:
             return summary
+
+        # Step 0: Archive the collapsed checkpoints' metadata before rewriting.
+        # Compaction must be lossless-in-substance: the objects go away (via gc)
+        # but the one-line record of each checkpoint survives in an append-only,
+        # greppable log that gc never touches.
+        archive = self.path / 'logs' / 'archive' / self.current_thread()
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        from .toon import format_ts
+        with open(archive, 'a') as f:
+            for ck in reversed(squashed_cks):  # oldest first
+                d = ck.diff_summary
+                delta = (f'+{len(d.added)} ~{len(d.modified)} -{len(d.removed)}'
+                         if d else '')
+                msg = ck.message.replace('\t', ' ').replace('\n', ' ')
+                f.write(f'{(ck.sha or "?")[:16]}\t{format_ts(ck.timestamp)}\t'
+                        f'{ck.trigger}\t{ck.author}\t{delta}\t{msg}\n')
 
         # Step 1: Write a new "squash root" checkpoint that has no parent —
         # this is the baseline. It carries the MindState from the oldest squashed
@@ -703,12 +1260,23 @@ class Repository:
             )
             remap[ck.sha] = self.store.write_checkpoint(updated)
 
-        # Step 4: Update HEAD
+        # Step 4: Update HEAD. Keep the index CONTENT untouched — staged
+        # (uncommitted) work must survive a squash; only the base checkpoint
+        # pointer moves to the rewritten head (same state, new sha).
         newest_kept_sha = remap.get(kept_cks[0].sha, kept_cks[0].sha)
-        self._set_ref(self.current_thread(), newest_kept_sha)
-        self._rebuild_index()
+        thread = self.current_thread()
+        staged_index = self.get_index()
+        self._set_ref(thread, newest_kept_sha)
+        self._write_index(staged_index, base_sha=newest_kept_sha)
+
+        # History was rewritten — refresh the chain-count cache
+        self._update_count_cache(
+            thread, newest_kept_sha, len(kept_cks) + 1,
+            format_ts(baseline_ck.timestamp),
+        )
 
         summary['new_head'] = newest_kept_sha[:8]
+        summary['archive'] = str(archive)
         return summary
 
     # ── Stats ─────────────────────────────────────────────────────────────────
@@ -736,7 +1304,9 @@ class Repository:
         for m in mnemonics:
             by_type[m.type_code] = by_type.get(m.type_code, 0) + 1
 
-        checkpoints = self.log(limit=10_000)
+        ck_count, first_ts = self.chain_info()   # O(1) via cache, not a walk
+        last = self.log(limit=1)
+        obj_count, obj_bytes = self.disk_usage()
 
         return {
             'total': len(mnemonics),
@@ -753,14 +1323,21 @@ class Repository:
             'reduction_pct': round(100 * (1 - avg_search_tokens / full_tokens)) if full_tokens else 0,
             'weekly_savings_tokens': (full_tokens - avg_search_tokens) * 10,  # 10 sessions/week
             'weekly_savings_usd': round(token_cost_usd((full_tokens - avg_search_tokens) * 10), 4),
-            'checkpoint_count': len(checkpoints),
-            'first_checkpoint_ts': checkpoints[-1].timestamp if checkpoints else None,
-            'last_checkpoint_ts': checkpoints[0].timestamp if checkpoints else None,
+            'checkpoint_count': ck_count,
+            'first_checkpoint_ts': first_ts,
+            'last_checkpoint_ts': last[0].timestamp if last else None,
+            'object_count': obj_count,
+            'disk_bytes': obj_bytes,
         }
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _author(self) -> str:
+        # MEMGIT_AUTHOR lets each agent in a multi-agent job sign its own
+        # checkpoints (e.g. MEMGIT_AUTHOR=researcher-1).
+        env_override = os.environ.get('MEMGIT_AUTHOR')
+        if env_override:
+            return env_override
         try:
             cfg = _read_config(self.path / 'config')
             return cfg.get('core', {}).get('author', _env_author())
