@@ -43,6 +43,10 @@ _TYPE_DESCRIPTIONS = (
 
 
 def _default_store() -> Path:
+    from .repo import default_store_candidates
+    for candidate in default_store_candidates():
+        if (candidate / ".memgit").is_dir():
+            return candidate
     return Path.home() / ".claude" / "memgit-store"
 
 

@@ -1,21 +1,28 @@
-"""Token counting utilities — approximation only, no external dependencies.
+"""Token counting utilities.
 
-Uses a character-based model calibrated against GPT-4 tokenizer averages:
-  - ~4 chars/token for English prose
-  - Code/slugs are slightly denser (~3.5 chars/token)
-  - Good enough for the 3–5x comparisons we display in `memgit stats`
+Uses tiktoken (GPT-4o encoding) when installed — `pip install memgit[tokens]` —
+otherwise falls back to a word-based approximation:
+  - Each whitespace-separated word averages ~1.3 tokens
+  - Good enough for the order-of-magnitude comparisons in `memgit stats`
 """
 
 from __future__ import annotations
 import re
 
+try:
+    import tiktoken
+    _ENCODER = tiktoken.get_encoding('o200k_base')
+except Exception:
+    _ENCODER = None
+
 
 def count_tokens(text: str) -> int:
-    """Approximate token count for `text` using a char-density model."""
+    """Token count for `text` — exact via tiktoken if available, else approximate."""
     if not text:
         return 0
-    # Strip whitespace normalization
     text = text.strip()
+    if _ENCODER is not None:
+        return max(1, len(_ENCODER.encode(text)))
     # Count whitespace-separated tokens (rough word count)
     words = len(re.findall(r'\S+', text))
     # Each word averages ~1.3 tokens (handles punctuation, subwords, numbers)
@@ -39,7 +46,7 @@ def search_tokens(scored: list, query: str) -> int:
 
 
 # GPT-4o pricing (input, per million tokens) as of 2026
-_GPT4O_PER_MTK = 5.0   # $5/1M tokens
+_GPT4O_PER_MTK = 2.5   # $2.50/1M tokens
 _CLAUDE_SONNET_PER_MTK = 3.0  # $3/1M tokens
 
 

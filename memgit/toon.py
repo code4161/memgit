@@ -2,7 +2,9 @@
 
 TOON — Thought Object Observation Notation
 Line-oriented, sigil-prefixed format purpose-built for AI memory objects.
-~45-55% fewer tokens than equivalent markdown.
+Slightly more token-efficient than equivalent markdown (~5-10% with a real
+tokenizer); the big context savings in memgit comes from BM25 top-k
+retrieval, not the format itself.
 """
 
 from __future__ import annotations
@@ -223,7 +225,7 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
     canonical=True: sorted fields (used for SHA computation).
     canonical=False: human-friendly output order.
     """
-    flags = f'|!{m.priority}' if m.priority == 3 else ''
+    flags = f'|!{m.priority}' if m.priority != 2 else ''
     header = f'TOON1|{m.type_code}|{m.slug}|{format_ts(m.timestamp)}{flags}'
     lines = [header]
 

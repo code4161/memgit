@@ -187,6 +187,44 @@ class TestRepository:
         assert found is not None
         assert found.path == repo.path
 
+    def test_resolve_ref(self, repo):
+        repo.add(make_mnemonic('rule-a'))
+        sha1 = repo.commit()
+        repo.add(make_mnemonic('rule-b'))
+        sha2 = repo.commit()
+
+        assert repo.resolve_ref('HEAD') == sha2
+        assert repo.resolve_ref('HEAD~1') == sha1
+        assert repo.resolve_ref(sha1[:8]) == sha1
+        assert repo.resolve_ref('nonexistent') is None
+
+    def test_rollback(self, repo):
+        repo.add(make_mnemonic('rule-a', 'original rule'))
+        sha1 = repo.commit()
+
+        repo.add(make_mnemonic('rule-b', 'a mistake'))
+        repo.commit()
+
+        # dry run: reports the removal, changes nothing
+        new_sha, d = repo.rollback('HEAD~1', dry_run=True)
+        assert new_sha is None
+        assert 'rule-b' in d.removed
+        assert repo.get('rule-b') is not None
+
+        # real rollback: rule-b gone, rule-a intact, history preserved
+        new_sha, d = repo.rollback(sha1)
+        assert new_sha is not None
+        assert repo.get('rule-b') is None
+        assert repo.get('rule-a').rule == 'original rule'
+        history = repo.log(limit=10)
+        assert history[0].sha == new_sha
+        assert history[0].trigger == 'rollback'
+        assert len(history) == 4  # root + 2 commits + rollback
+
+    def test_rollback_bad_ref(self, repo):
+        with pytest.raises(ValueError):
+            repo.rollback('does-not-exist')
+
     def test_fsck_clean(self, repo):
         repo.add(make_mnemonic())
         repo.commit()

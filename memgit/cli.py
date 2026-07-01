@@ -50,14 +50,12 @@ def cli():
 
 def _default_store_path() -> Path:
     """Pick the best default store location based on what's installed."""
-    home = Path.home()
-    if (home / '.claude').exists():
-        return home / '.claude' / 'memgit-store'
-    if (home / '.cursor').exists():
-        return home / '.cursor' / 'memgit-store'
-    if (home / '.windsurf').exists():
-        return home / '.windsurf' / 'memgit-store'
-    return home / '.memgit-store'
+    from .repo import default_store_candidates
+    for candidate in default_store_candidates():
+        # candidates are <tool-dir>/memgit-store; pick the first whose tool dir exists
+        if candidate.parent.exists() and candidate.parent != Path.home():
+            return candidate
+    return Path.home() / '.memgit-store'
 
 
 @cli.command()
@@ -265,6 +263,52 @@ def diff(sha1, sha2, full):
             console.print(f'[red]- {s}[/red]')
         if not d.added and not d.modified and not d.removed:
             console.print('[dim]No changes[/dim]')
+
+
+# ── rollback ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument('ref')
+@click.option('--dry-run', is_flag=True, help='Preview changes without applying')
+@click.option('--yes', '-y', is_flag=True, help='Skip confirmation prompt')
+def rollback(ref, dry_run, yes):
+    """Restore memory state to a checkpoint (HEAD~N or SHA).
+
+    Creates a new checkpoint matching the target state — history is
+    preserved, nothing is deleted. Examples:
+
+    \b
+      memgit rollback HEAD~2
+      memgit rollback a1d9f3c
+      memgit rollback HEAD~1 --dry-run
+    """
+    repo = _require_repo()
+
+    try:
+        _, d = repo.rollback(ref, dry_run=True)
+    except ValueError:
+        err.print(f'[red]Cannot resolve ref:[/red] {ref}')
+        sys.exit(1)
+
+    for s in d.added:
+        console.print(f'[green]+ {s}[/green]  [dim](restored)[/dim]')
+    for s in d.modified:
+        console.print(f'[yellow]~ {s}[/yellow]  [dim](reverted to older version)[/dim]')
+    for s in d.removed:
+        console.print(f'[red]- {s}[/red]')
+
+    if not d.added and not d.modified and not d.removed:
+        console.print('[dim]Already at that state — nothing to roll back.[/dim]')
+        return
+    if dry_run:
+        console.print('[dim]Dry run — no changes applied.[/dim]')
+        return
+    if not yes and not click.confirm('Confirm rollback?'):
+        console.print('[dim]Aborted.[/dim]')
+        return
+
+    new_sha, _ = repo.rollback(ref)
+    console.print(f'[green]Rolled back[/green] → new checkpoint [cyan]{(new_sha or "")[:8]}[/cyan]')
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
@@ -833,12 +877,6 @@ def stats():
         f'{full_tok:,}',
         '100%  baseline',
         f'${token_cost_usd(full_tok):.4f}',
-    )
-    bench.add_row(
-        '[yellow]mem-search plugin (top-20 obs)[/yellow]',
-        f'{min(full_tok, search_tok * 2):,}  [dim](est.)[/dim]',
-        f'~{min(100, round(100 * min(full_tok, search_tok * 2) / full_tok))}%',
-        f'${token_cost_usd(min(full_tok, search_tok * 2)):.4f}',
     )
     bench.add_row(
         '[green]memgit search (BM25 top-8)[/green]',

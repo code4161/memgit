@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-48%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen)](tests/)
 
 ---
 
@@ -23,7 +23,7 @@ You've probably already tried both. Here's why they hit a ceiling:
 | Loads only relevant context | ❌ loads everything | ⚠️ loads recent observations | ✅ BM25 search — top-k per query |
 | Version history | ❌ | ❌ | ✅ full commit log |
 | Diff between sessions | ❌ | ❌ | ✅ `memgit diff` |
-| Roll back a wrong memory | ❌ manual edit | ❌ | ✅ `memgit checkout` |
+| Roll back a wrong memory | ❌ manual edit | ❌ | ✅ `memgit rollback` |
 | Works in Cursor, Windsurf, GPT | ❌ Claude only | ❌ Claude only | ✅ all via MCP / HTTP |
 | Team sync | ❌ copy-paste files | ❌ | ✅ `memgit git push` |
 | Scales to 10k+ sessions | ❌ file grows | ❌ search slows | ✅ `memgit squash` |
@@ -46,14 +46,13 @@ $ memgit stats
   ┌─────────────────────────────────────┬──────────────────┬───────────────────┬─────────────────────┐
   │ Approach                            │ Tokens/session   │ vs full load      │ $/session (GPT-4o)  │
   ├─────────────────────────────────────┼──────────────────┼───────────────────┼─────────────────────┤
-  │ claude.md / dump all memories       │ 12,840           │ 100%  baseline    │ $0.0642             │
-  │ mem-search plugin (top-20 obs)      │ 6,100 (est.)     │ ~47%              │ $0.0305             │
-  │ memgit search (BM25 top-8)          │ 640              │ 5%  (95% savings) │ $0.0032             │
+  │ claude.md / dump all memories       │ 12,840           │ 100%  baseline    │ $0.0321             │
+  │ memgit search (BM25 top-8)          │ 640              │ 5%  (95% savings) │ $0.0016             │
   └─────────────────────────────────────┴──────────────────┴───────────────────┴─────────────────────┘
 
   Weekly savings (10 sessions/week):
-    Tokens saved:   121,600/week
-    Cost saved:     $0.61/week  →  $31.70/year  (at GPT-4o input pricing)
+    Tokens saved:   122,000/week
+    Cost saved:     $0.31/week  →  $15.86/year  (at GPT-4o input pricing, $2.50/M)
 ```
 
 **Why such a big difference?** claude.md loads *all* context every session. memgit uses BM25 relevance scoring — it loads *only the 8 memories most relevant to the current session*, not everything you've ever recorded.
@@ -120,8 +119,9 @@ brew tap code4161/tap && brew install memgit
 
 **Windows:**
 ```powershell
-choco install memgit
+pip install memgit
 ```
+(`choco install memgit` is not live yet — the Chocolatey package is not on community.chocolatey.org. Use pip until it lands.)
 
 **Any AI tool config (no Python needed — npx auto-installs on first run):**
 ```json
@@ -194,6 +194,7 @@ memgit show <slug>                # display a memory
 memgit remove <slug>              # remove from active index (history preserved)
 memgit status                     # staged changes
 memgit search <query>             # BM25 relevance search
+memgit rollback <ref>             # restore state to a checkpoint (HEAD~N or SHA)
 memgit squash                     # compress old history
 
 # Scale & proof
@@ -250,7 +251,7 @@ memgit thread list / switch / create
 
 ---
 
-## TOON format — why it's 40–55% more token-efficient
+## TOON format — compact, readable, diffable
 
 Standard markdown memory file:
 ```markdown
@@ -261,7 +262,6 @@ Standard markdown memory file:
 **When to apply:** Any time writing tests that touch persistence layers.  
 **Tags:** testing, database
 ```
-*~62 tokens*
 
 The same memory in TOON:
 ```
@@ -271,9 +271,12 @@ RULE:Never mock the database in tests
 WHY:Mocked tests passed but prod migration failed last quarter
 WHEN:Any persistence test
 ```
-*~35 tokens — 44% fewer for identical content*
 
-At 108 memories: **12,840 tokens (markdown) → 640 tokens (memgit BM25 top-8)**
+Measured with a real tokenizer, TOON is ~5–10% leaner than equivalent markdown — a nice bonus, not the headline. **The headline saving is retrieval**: memgit loads the top-8 relevant memories per query instead of everything.
+
+At 108 memories: **12,840 tokens (dump everything) → 640 tokens (memgit BM25 top-8)**
+
+For exact token counts in `memgit stats`, install the optional tokenizer: `pip install "memgit[tokens]"`.
 
 ---
 
@@ -310,7 +313,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Roadmap
 
 - [x] Content-addressed object store (git-identical architecture)
-- [x] TOON format (40–55% token reduction vs markdown)
+- [x] TOON format (compact line-oriented memory format)
 - [x] MCP server — Claude Code, Cursor, Windsurf, Cline, Continue.dev
 - [x] HTTP server — ChatGPT Custom Actions, Gemini function calling
 - [x] BM25 relevance search (load only what matters)
@@ -319,13 +322,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] `memgit git push/pull` — team sync via standard git
 - [x] Flat `memories/` directory — grep/diff/blame your memories
 - [x] D3.js graph visualization of memory relationships
-- [x] PyPI + Homebrew + npm + Chocolatey published (v0.1.2)
+- [x] PyPI + Homebrew (tap) + npm published (v0.1.2)
+- [ ] Chocolatey (not yet live on community.chocolatey.org)
 - [x] Interactive setup wizard (`memgit setup`)
 - [x] Smart `memgit init` (auto-detects tool, no path needed)
-- [ ] VS Code extension (Phase 3)
+- [x] VS Code extension (v0.1.3, Marketplace: code416-memgit.memgit)
 - [ ] JetBrains plugin (Phase 3)
 - [ ] Semantic search via embeddings (Phase 4)
-- [ ] memgit.dev website (Phase 4)
+- [x] memgit.dev website (live)
 - [ ] Memory compression / auto-summarization (Phase 5)
 - [ ] Team access control + audit trail (Phase 5)
 - [ ] Memory marketplace — share reusable context packs (Phase 6)

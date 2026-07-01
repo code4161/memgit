@@ -1,25 +1,16 @@
 # memgit — Quick Start
 
-## Run it (until alias is set up)
+## Install & initialize
 
 ```bash
-/Users/hari/Personal\ business/memgit/.venv/bin/memgit --help
+pip install memgit
+memgit init          # auto-detects the best store location (e.g. ~/.claude/memgit-store)
+memgit setup         # register with your AI tools (interactive picker)
 ```
 
-## Add to shell (run once manually)
+## Everyday commands
 
 ```bash
-echo 'alias memgit="/Users/hari/Personal\ business/memgit/.venv/bin/memgit"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-## Your Claude Code memory store
-
-Location: `~/.claude/memgit-store/`
-
-```bash
-cd ~/.claude/memgit-store
-
 # See current state
 memgit status
 
@@ -30,10 +21,10 @@ memgit log --oneline
 memgit list
 
 # Show a specific memory (by slug)
-memgit show ig-creative-rules
+memgit show my-rule
 
-# Show in TOON format (token-efficient)
-memgit show ig-creative-rules --toon
+# Show in TOON format (compact storage format)
+memgit show my-rule --toon
 
 # Add a new memory
 memgit add my-new-rule "always do X" --type fb --why "because Y" --when "when doing Z"
@@ -44,11 +35,15 @@ memgit commit -m "added new rule"
 # See what changed since last checkpoint
 memgit diff --full
 
-# Import latest Claude Code files (after manual edits to markdown)
-memgit import claude-code
+# Search by relevance (BM25)
+memgit search "auth pattern"
 
-# Re-sync: import from the specific project memory dir
-memgit import claude-code ~/.claude/projects/-Users-hari-Personal-business/memory/
+# Undo a bad change — restore an earlier checkpoint
+memgit rollback HEAD~1 --dry-run   # preview
+memgit rollback HEAD~1             # apply (history is preserved)
+
+# Import existing Claude Code memory files
+memgit import claude-code ~/.claude/projects/
 ```
 
 ## Memory types
@@ -68,6 +63,8 @@ memgit import claude-code ~/.claude/projects/-Users-hari-Personal-business/memor
 - `2` = medium (default)
 - `3` = critical (must always load)
 
-## Session 2 (next)
+## More
 
-Build the MCP server so Claude Code reads memories directly from memgit instead of markdown files.
+- Full install & AI-tool registration guide: [INSTALL.md](INSTALL.md)
+- All commands: `memgit --help`
+- Docs: https://memgit.dev/docs

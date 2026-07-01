@@ -59,6 +59,21 @@ WHO:Python+TypeScript,new-to-React,₹50L-by-dec26"""
     assert m.who == 'Python+TypeScript,new-to-React,₹50L-by-dec26'
 
 
+@pytest.mark.parametrize('priority', [1, 2, 3])
+def test_priority_roundtrip(priority):
+    m = Mnemonic(
+        type_code='fb',
+        slug='priority-roundtrip',
+        timestamp=ts(),
+        rule='priority must survive serialize/parse',
+        priority=priority,
+    )
+    for canonical in (False, True):
+        again = parse_toon(serialize_mnemonic(m, canonical=canonical))
+        assert len(again) == 1
+        assert again[0].priority == priority
+
+
 def test_reference_memory():
     toon = """TOON1|rf|linear-bugs-ingest|2026-06-01T10:00Z
 #linear #bugs

@@ -15,6 +15,17 @@ from .models import (
 from .store import ObjectStore
 
 
+def default_store_candidates() -> list[Path]:
+    """Well-known store locations, in the same order `memgit init` auto-detects."""
+    home = Path.home()
+    return [
+        home / '.claude' / 'memgit-store',
+        home / '.cursor' / 'memgit-store',
+        home / '.windsurf' / 'memgit-store',
+        home / '.memgit-store',
+    ]
+
+
 class Repository:
     """A memgit repository rooted at `.memgit/`."""
 
@@ -26,7 +37,11 @@ class Repository:
 
     @classmethod
     def find(cls, start: Path = None) -> Optional['Repository']:
-        """Walk up from start looking for a `.memgit/` directory."""
+        """Walk up from start looking for a `.memgit/` directory.
+
+        If none is found, fall back to the well-known store locations that
+        `memgit init` auto-detects, so commands work from any directory.
+        """
         current = Path(start or Path.cwd())
         while True:
             candidate = current / '.memgit'
@@ -34,8 +49,14 @@ class Repository:
                 return cls(candidate)
             parent = current.parent
             if parent == current:
-                return None
+                break
             current = parent
+
+        for store in default_store_candidates():
+            candidate = store / '.memgit'
+            if candidate.is_dir():
+                return cls(candidate)
+        return None
 
     # ── Init ──────────────────────────────────────────────────────────────────
 
@@ -322,6 +343,73 @@ class Repository:
             result.append((slug, status, old_m, new_m))
 
         return result
+
+    # ── Rollback ──────────────────────────────────────────────────────────────
+
+    def resolve_ref(self, ref: str) -> Optional[str]:
+        """Resolve 'HEAD', 'HEAD~n', or a checkpoint SHA prefix to a full SHA."""
+        ref = ref.strip()
+        upper = ref.upper()
+        if upper == 'HEAD':
+            return self.head_sha()
+        if upper.startswith('HEAD~'):
+            try:
+                n = int(ref[5:])
+            except ValueError:
+                return None
+            sha = self.head_sha()
+            for _ in range(n):
+                if not sha:
+                    return None
+                try:
+                    sha = self.store.read_checkpoint(sha).parent_sha
+                except Exception:
+                    return None
+            return sha
+        # SHA prefix — walk the chain; ambiguous prefixes resolve to None
+        matches: list[str] = []
+        sha = self.head_sha()
+        while sha:
+            if sha.startswith(ref):
+                matches.append(sha)
+            try:
+                sha = self.store.read_checkpoint(sha).parent_sha
+            except Exception:
+                break
+        return matches[0] if len(matches) == 1 else None
+
+    def rollback(self, ref: str, dry_run: bool = False) -> tuple[Optional[str], DiffSummary]:
+        """Restore the memory state to checkpoint `ref` (git-revert style).
+
+        Creates a NEW checkpoint whose MindState equals the target's —
+        history is preserved, no objects are deleted.
+        Returns (new_checkpoint_sha, diff current→target). The sha is None
+        on dry_run or when the state already matches the target.
+        """
+        target_sha = self.resolve_ref(ref)
+        if target_sha is None:
+            raise ValueError(f'cannot resolve ref: {ref}')
+        target_ck = self.store.read_checkpoint(target_sha)
+        target_ms = self.store.read_mindstate(target_ck.mindstate_sha)
+        target_index = {e.slug: e.mnem_sha for e in target_ms.entries}
+
+        current = self.get_index()
+        diff = DiffSummary(
+            added=[s for s in target_index if s not in current],
+            removed=[s for s in current if s not in target_index],
+            modified=[s for s in current if s in target_index and current[s] != target_index[s]],
+            unchanged=[s for s in current if s in target_index and current[s] == target_index[s]],
+        )
+        if dry_run:
+            return None, diff
+
+        self._write_index(target_index)
+        new_sha = self.commit(
+            message=f'rollback to {target_sha[:8]}', trigger='rollback',
+        )
+        if new_sha and self.memories_dir.exists():
+            self.write_flat()
+        return new_sha, diff
 
     # ── Thread management ─────────────────────────────────────────────────────
 
@@ -628,7 +716,6 @@ class Repository:
     def stats(self) -> dict:
         """Compute token-savings statistics for the memory store."""
         from .tokens import all_memories_tokens, memory_tokens, token_cost_usd
-        from .scorer import score as bm25_score
 
         mnemonics = self.list()
         if not mnemonics:
@@ -637,17 +724,10 @@ class Repository:
         full_tokens = all_memories_tokens(mnemonics)
         avg_mem_tokens = full_tokens / len(mnemonics) if mnemonics else 0
 
-        # Simulate a typical search: top-8 results
-        sample_queries = [
-            'how should I approach this', 'project rules and conventions',
-            'user preferences', 'what to avoid', 'lessons learned',
-        ]
-        search_token_samples = []
-        for q in sample_queries:
-            results = bm25_score(q, mnemonics, top_k=8)
-            toks = sum(memory_tokens(r.mnemonic) for r in results)
-            search_token_samples.append(toks)
-        avg_search_tokens = round(sum(search_token_samples) / len(search_token_samples)) if search_token_samples else 0
+        # Cost of a typical search: top-8 memories of average size.
+        # (Deterministic — simulated queries under-fill the top-k on misses
+        # and inflate the savings figure.)
+        avg_search_tokens = round(avg_mem_tokens * min(8, len(mnemonics)))
 
         critical = [m for m in mnemonics if m.priority == 3]
         critical_tokens = sum(memory_tokens(m) for m in critical)

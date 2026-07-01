@@ -16,10 +16,11 @@ pip install memgit
 brew tap code4161/tap && brew install memgit
 ```
 
-**Windows (Chocolatey):**
+**Windows (pip):**
 ```powershell
-choco install memgit
+pip install memgit
 ```
+(`choco install memgit` is not live yet — the Chocolatey package is not on community.chocolatey.org.)
 
 **Any AI tool config (no Python needed — npx auto-installs):**
 ```json
@@ -192,7 +193,6 @@ memgit can sync your memories automatically when a Claude Code session ends:
 }
 ```
 
-Or use `memgit setup claude-code` — it sets this up automatically.
 
 ---
 
