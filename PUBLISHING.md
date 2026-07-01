@@ -12,7 +12,7 @@
 | 2 | **PyPI** | All Python devs | ✅ v0.1.2 — `pip install memgit` |
 | 3 | **Homebrew tap** | Mac + Linux devs | ✅ `brew tap code4161/tap && brew install memgit` |
 | 4 | **Claude Code plugin** | Claude Code users | ✅ code4161/claude-plugins — live |
-| 5 | **npm wrapper** | MCP/Node ecosystem | ✅ workflow ready — needs Automation token (see Step 5) |
+| 5 | **npm wrapper** | MCP/Node ecosystem | ✅ v0.1.2 live — `npx memgit-mcp` |
 | 6 | **Chocolatey** | Windows devs | ✅ workflow ready — pending 1–3 day moderation |
 | 7 | **winget** | Windows (Microsoft) | ⬜ later (after Chocolatey is approved) |
 | 8 | **Homebrew core** | Wide Mac audience | ⬜ later (after 100+ stars) |
@@ -87,16 +87,7 @@ To update: bump `version` in `claude-plugins/marketplace.json` and push.
 
 Workflow at `.github/workflows/npm-publish.yml` fires on every `v*.*.*` tag.
 
-**One action required:** The current `NPM_TOKEN` secret is a **Publish** token which requires OTP.
-Replace it with an **Automation** token (bypasses 2FA — needed for CI):
-1. Go to npmjs.com → your avatar → **Access Tokens**
-2. Click **Generate New Token** → choose **Automation**
-3. Copy the token, then run:
-   ```bash
-   cd "/Users/hari/Personal business/memgit"
-   gh secret set NPM_TOKEN --body "<new-automation-token>"
-   ```
-4. Push any new `v*.*.*` tag — the workflow will publish automatically.
+Published v0.1.2. Automation token set as `NPM_TOKEN` secret — future `v*.*.*` tag pushes publish automatically.
 
 **Users can then add to any AI tool config:**
 ```json
