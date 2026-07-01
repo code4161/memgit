@@ -35,3 +35,6 @@ Thumbs.db
 # Personal store — never commit your own memories
 memgit-store/
 *.memgit-store/
+
+# Internal tracking — not for public repo
+PUBLISHING.md
