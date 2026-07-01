@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.4] — 2026-07-02
 
 ### Added
 - `memgit rollback <ref>` — restore state to a checkpoint (`HEAD~N` or SHA prefix), git-revert style: creates a new checkpoint, history preserved; `--dry-run` and `-y` flags
