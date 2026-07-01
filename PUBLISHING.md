@@ -6,16 +6,16 @@
 
 ## Priority order
 
-| # | Channel | Audience | Effort | Status |
-|---|---|---|---|---|
-| 1 | **GitHub repo** | Foundation for everything | 10 min | ✅ code4161/memgit — live |
-| 2 | **PyPI** | All Python devs, Linux/Mac/Win | 20 min | ✅ v0.1.1 published — `pip install memgit` works |
-| 3 | **Homebrew tap** | Mac + Linux devs | 15 min | ⬜ you do this |
-| 4 | **Claude Code plugin** | Claude Code users | 10 min | ⬜ you do this |
-| 5 | **npm wrapper** | MCP/Cursor/Node ecosystem | 10 min | ⬜ you do this |
-| 6 | **Chocolatey** | Windows developers | 30 min | ⬜ you do this |
-| 7 | **winget** | Windows via Microsoft | 1–2 weeks approval | ⬜ later |
-| 8 | **Homebrew core** | Wide Mac audience | Wait for adoption | ⬜ later (after 100+ stars) |
+| # | Channel | Audience | Status |
+|---|---|---|---|
+| 1 | **GitHub repo** | Foundation | ✅ code4161/memgit — live |
+| 2 | **PyPI** | All Python devs | ✅ v0.1.2 — `pip install memgit` |
+| 3 | **Homebrew tap** | Mac + Linux devs | ✅ `brew tap code4161/tap && brew install memgit` |
+| 4 | **Claude Code plugin** | Claude Code users | ✅ code4161/claude-plugins — live |
+| 5 | **npm wrapper** | MCP/Node ecosystem | ✅ workflow ready — needs Automation token (see Step 5) |
+| 6 | **Chocolatey** | Windows devs | ✅ workflow ready — pending 1–3 day moderation |
+| 7 | **winget** | Windows (Microsoft) | ⬜ later (after Chocolatey is approved) |
+| 8 | **Homebrew core** | Wide Mac audience | ⬜ later (after 100+ stars) |
 
 ---
 
@@ -54,39 +54,9 @@ memgit --version
 
 ---
 
-## Step 3 — Homebrew tap (brew install memgit)
+## Step 3 — Homebrew tap ✅ DONE
 
-**Create the tap repo:**
-1. Go to [github.com/new](https://github.com/new)
-2. Name: **`homebrew-tap`** (must be this exact name) · Public
-3. On your machine:
-   ```bash
-   mkdir ~/homebrew-tap
-   cd ~/homebrew-tap
-   git init
-   mkdir Formula
-   ```
-
-**Generate the formula with correct sha256s** (after PyPI publish):
-```bash
-# Install homebrew-pypi-poet (generates resource stanzas from PyPI)
-pip install homebrew-pypi-poet
-
-# Generate resource blocks for all dependencies
-poet memgit > /tmp/resources.txt
-cat /tmp/resources.txt
-```
-
-4. Copy `Formula/memgit.rb` from this repo into `~/homebrew-tap/Formula/memgit.rb`
-5. Replace `REPLACE_WITH_ACTUAL_SHA256_AFTER_TAGGING` with the real sha256:
-   ```bash
-   curl -sL https://github.com/code4161/memgit/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
-   ```
-6. Fill in the resource stanzas from `poet` output
-7. Push:
-   ```bash
-   git add . && git commit -m "add memgit formula" && git push -u origin main
-   ```
+Tap live: https://github.com/code4161/homebrew-tap
 
 **Users install with:**
 ```bash
@@ -94,50 +64,14 @@ brew tap code4161/tap
 brew install memgit
 ```
 
-**Test your formula locally first:**
-```bash
-brew install --build-from-source ~/homebrew-tap/Formula/memgit.rb
-brew test memgit
-```
+Formula at `Formula/memgit.rb` — uses PyPI tarball (v0.1.2 sha256 pinned).
+To update for a new version: update `url` + `sha256` in `Formula/memgit.rb` and push to `homebrew-tap`.
 
 ---
 
-## Step 4 — Claude Code plugin
+## Step 4 — Claude Code plugin ✅ DONE
 
-This makes memgit discoverable and installable from within Claude Code via `/plugin install memgit@code4161`.
-
-**Create the marketplace repo:**
-1. Go to [github.com/new](https://github.com/new)
-2. Name: `claude-plugins` · Public
-
-3. Structure:
-   ```
-   claude-plugins/
-     marketplace.json          ← defines available plugins
-     plugins/
-       memgit/
-         CLAUDE.md             ← already in claude-plugin/CLAUDE.md
-         .mcp.json             ← already in claude-plugin/.mcp.json
-         README.md
-   ```
-
-4. `marketplace.json`:
-   ```json
-   {
-     "plugins": [
-       {
-         "name": "memgit",
-         "description": "Git for AI memory — persistent context across Claude, GPT, Cursor and more",
-         "version": "0.1.0",
-         "path": "plugins/memgit",
-         "tags": ["memory", "mcp", "context", "productivity"]
-       }
-     ]
-   }
-   ```
-
-5. Copy `claude-plugin/` contents → `plugins/memgit/` in the new repo
-6. Push
+Repo live: https://github.com/code4161/claude-plugins
 
 **Users install with:**
 ```
@@ -145,24 +79,24 @@ This makes memgit discoverable and installable from within Claude Code via `/plu
 /plugin install memgit@code4161
 ```
 
-**Note:** For the official Anthropic marketplace, submit a PR to `anthropics/claude-plugins-community` later (after v1.0 + some adoption). The personal marketplace works immediately.
+To update: bump `version` in `claude-plugins/marketplace.json` and push.
 
 ---
 
-## Step 5 — npm wrapper (npx memgit-mcp)
+## Step 5 — npm wrapper ✅ WORKFLOW READY — needs Automation token
 
-This lets MCP-aware tools install memgit without knowing about Python at all.
+Workflow at `.github/workflows/npm-publish.yml` fires on every `v*.*.*` tag.
 
-**One-time npm account:**
-1. Create account at [npmjs.com/signup](https://www.npmjs.com/signup)
-2. Enable 2FA
-
-**Publish:**
-```bash
-cd "/Users/hari/Personal business/memgit/npm-wrapper"
-npm login
-npm publish --access public
-```
+**One action required:** The current `NPM_TOKEN` secret is a **Publish** token which requires OTP.
+Replace it with an **Automation** token (bypasses 2FA — needed for CI):
+1. Go to npmjs.com → your avatar → **Access Tokens**
+2. Click **Generate New Token** → choose **Automation**
+3. Copy the token, then run:
+   ```bash
+   cd "/Users/hari/Personal business/memgit"
+   gh secret set NPM_TOKEN --body "<new-automation-token>"
+   ```
+4. Push any new `v*.*.*` tag — the workflow will publish automatically.
 
 **Users can then add to any AI tool config:**
 ```json
@@ -176,32 +110,14 @@ npm publish --access public
 }
 ```
 
-Or run directly: `npx memgit-mcp`
-
-**On first run**, npx installs the wrapper, which then auto-installs memgit into `~/.memgit-npm-venv` via pip.
-
 ---
 
-## Step 6 — Chocolatey (choco install memgit)
+## Step 6 — Chocolatey ✅ WORKFLOW READY — pending moderation
 
-**One-time account:**
-1. Create account at [community.chocolatey.org](https://community.chocolatey.org/account/register)
-2. Get your API key: Profile → API Keys → Copy
+Workflow at `.github/workflows/choco-publish.yml` fires on every `v*.*.*` tag.
+`CHOCOLATEY_API_KEY` is already set as a GitHub Actions secret.
 
-**Build and submit:**
-```powershell
-# Install Chocolatey tooling (on Windows)
-choco install chocolatey-core.extension
-
-# From the repo on Windows:
-cd chocolatey
-choco pack memgit.nuspec
-
-# Push (replace YOUR_KEY with your API key)
-choco push memgit.0.1.0.nupkg --source https://push.chocolatey.org --api-key YOUR_KEY
-```
-
-**Moderation:** Takes 1–3 days. You'll get an email when it's approved.
+The package was submitted on the next `v*.*.*` tag push. Moderation takes 1–3 days.
 
 **After approval:**
 ```powershell

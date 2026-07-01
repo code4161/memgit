@@ -1,17 +1,18 @@
 {
   "name": "memgit-mcp",
-  "version": "0.1.0",
+  "version": "0.1.2",
+  "type": "module",
   "description": "memgit MCP server — run as npx memgit-mcp. Git for AI memory.",
   "keywords": ["mcp", "ai", "memory", "claude", "cursor", "llm", "context"],
   "homepage": "https://memgit.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/code4161/memgit.git",
+    "url": "git+https://github.com/code4161/memgit.git",
     "directory": "npm-wrapper"
   },
   "license": "MIT",
   "bin": {
-    "memgit-mcp": "./bin/memgit-mcp.js"
+    "memgit-mcp": "bin/memgit-mcp.js"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,0 +1,24 @@
+name: Publish to Chocolatey
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pack Chocolatey package
+        run: choco pack chocolatey/memgit.nuspec
+        shell: pwsh
+
+      - name: Push to Chocolatey
+        run: |
+          $pkg = Get-ChildItem -Filter "memgit.*.nupkg" | Select-Object -First 1
+          choco push $pkg.Name --source https://push.chocolatey.org --api-key $env:CHOCOLATEY_API_KEY
+        shell: pwsh
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}

@@ -6,19 +6,33 @@
 
 ## Install
 
+**Mac / Linux (pip):**
 ```bash
 pip install memgit
 ```
 
-Or from source (this repo):
+**Mac (Homebrew):**
+```bash
+brew tap code4161/tap && brew install memgit
+```
 
+**Windows (Chocolatey):**
+```powershell
+choco install memgit
+```
+
+**Any AI tool config (no Python needed — npx auto-installs):**
+```json
+{ "mcpServers": { "memgit": { "command": "npx", "args": ["-y", "memgit-mcp"] } } }
+```
+
+**From source:**
 ```bash
 cd /path/to/memgit
 pip install -e .
 ```
 
 Verify:
-
 ```bash
 memgit --version
 ```
@@ -28,9 +42,8 @@ memgit --version
 ## Initialize your memory store
 
 ```bash
-memgit init ~/.claude/memgit-store
-cd ~/.claude/memgit-store
-memgit sync                      # import your existing Claude Code memories
+memgit init          # auto-picks the best location (e.g. ~/.claude/memgit-store)
+memgit sync          # import your existing Claude Code memories
 ```
 
 ---
@@ -208,5 +221,5 @@ memgit serve --store /path/to/store
 - Run `which memgit` to find the path, then use that full path in the config.
 
 **Store not found error:**
-- Run `memgit init ~/.claude/memgit-store` first.
+- Run `memgit init` first (auto-detects the right location).
 - If using a custom store, pass `--store /path/to/store` to `memgit serve`.

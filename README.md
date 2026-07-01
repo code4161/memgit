@@ -7,7 +7,20 @@
 **Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs like code.**
 
 ```bash
+# Mac / Linux
 pip install memgit
+
+# Mac (Homebrew)
+brew tap code4161/tap && brew install memgit
+
+# Windows
+choco install memgit
+
+# Any AI tool config (no Python needed)
+npx memgit-mcp
+```
+
+```bash
 memgit init               # auto-detects best location for your setup
 memgit setup              # step-by-step: pick which AI tools to register
 memgit stats              # see your token savings vs claude.md / other plugins
