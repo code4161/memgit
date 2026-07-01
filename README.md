@@ -8,8 +8,8 @@
 
 ```bash
 pip install memgit
-memgit init ~/.claude/memgit-store
-memgit setup all          # registers with every AI tool detected on your machine
+memgit init               # auto-detects best location for your setup
+memgit setup              # step-by-step: pick which AI tools to register
 memgit stats              # see your token savings vs claude.md / other plugins
 ```
 

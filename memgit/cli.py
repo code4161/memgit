@@ -29,8 +29,15 @@ def _require_repo() -> Repository:
 
 # ── Root group ────────────────────────────────────────────────────────────────
 
+try:
+    from importlib.metadata import version as _pkg_version
+    _version = _pkg_version('memgit')
+except Exception:
+    _version = '0.1.2'
+
+
 @click.group()
-@click.version_option('0.1.0', prog_name='memgit')
+@click.version_option(_version, prog_name='memgit')
 def cli():
     """memgit — git for AI memory.
 
@@ -41,16 +48,41 @@ def cli():
 
 # ── init ──────────────────────────────────────────────────────────────────────
 
+def _default_store_path() -> Path:
+    """Pick the best default store location based on what's installed."""
+    home = Path.home()
+    if (home / '.claude').exists():
+        return home / '.claude' / 'memgit-store'
+    if (home / '.cursor').exists():
+        return home / '.cursor' / 'memgit-store'
+    if (home / '.windsurf').exists():
+        return home / '.windsurf' / 'memgit-store'
+    return home / '.memgit-store'
+
+
 @cli.command()
-@click.argument('directory', default='.', type=click.Path())
+@click.argument('directory', default=None, required=False, type=click.Path())
 def init(directory):
-    """Initialize a memgit repository."""
-    path = Path(directory).resolve()
+    """Initialize a memgit store.
+
+    If no path is given, picks the best location automatically:
+      · ~/.claude/memgit-store   (if Claude Code is installed)
+      · ~/.cursor/memgit-store   (if Cursor is installed)
+      · ~/.windsurf/memgit-store (if Windsurf is installed)
+      · ~/.memgit-store          (fallback)
+    """
+    if directory is None:
+        path = _default_store_path()
+        console.print(f'[dim]Using[/dim] [cyan]{path}[/cyan]  [dim](auto-detected)[/dim]')
+    else:
+        path = Path(directory).resolve()
+
     if (path / '.memgit').exists():
         console.print(f'[yellow]Already initialized:[/yellow] {path / ".memgit"}')
         return
     repo = Repository.init(path)
-    console.print(f'[green]Initialized[/green] memgit repository in [cyan]{repo.path}[/cyan]')
+    console.print(f'[green]Initialized[/green] memgit store in [cyan]{repo.path}[/cyan]')
+    console.print(f'[dim]Run [bold]memgit setup[/bold] to register with your AI tools.[/dim]')
 
 
 # ── add ───────────────────────────────────────────────────────────────────────
@@ -1134,14 +1166,75 @@ def _all_targets():
     ]
 
 
-@cli.group()
-def setup():
+def _setup_wizard() -> None:
+    """Interactive step-by-step tool picker for `memgit setup` (bare)."""
+    targets = _all_targets()
+
+    detected, missing = [], []
+    for label, config_path, patch_fn in targets:
+        (detected if config_path.exists() or config_path.parent.exists() else missing).append(
+            (label, config_path, patch_fn)
+        )
+
+    console.print('[bold]memgit setup[/bold] — interactive tool registration\n')
+
+    if not detected:
+        console.print('[yellow]No AI tools detected on this machine.[/yellow]')
+        console.print('Install Claude Code, Cursor, Windsurf, Cline, or Continue.dev first,')
+        console.print('then run [bold]memgit setup all[/bold] or [bold]memgit setup <tool>[/bold].')
+        return
+
+    console.print('[green]Detected on this machine:[/green]')
+    for i, (label, config_path, _) in enumerate(detected, 1):
+        note = 'config exists' if config_path.exists() else 'dir exists'
+        console.print(f'  [bold]{i}[/bold]. {label}  [dim]({note})[/dim]')
+
+    if missing:
+        console.print('\n[dim]Not detected (will be skipped):[/dim]')
+        for label, _, _ in missing:
+            console.print(f'  [dim]· {label}[/dim]')
+
+    console.print()
+    choice = click.prompt('Register which tools? (all / 1,2,3 / none)', default='all')
+    choice = choice.strip().lower()
+
+    if choice in ('none', 'n', 'q'):
+        console.print('[dim]Cancelled.[/dim]')
+        return
+
+    if choice == 'all':
+        selected = detected
+    else:
+        try:
+            indices = [int(x.strip()) - 1 for x in choice.split(',')]
+            selected = [detected[i] for i in indices if 0 <= i < len(detected)]
+        except ValueError:
+            console.print('[red]Invalid selection — enter "all", "none", or numbers like 1,2[/red]')
+            return
+
+    console.print()
+    for label, config_path, patch_fn in selected:
+        _run_target(label, config_path, patch_fn, dry_run=False)
+
+    if selected:
+        console.print('[dim]\nRestart each AI tool for changes to take effect.[/dim]')
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def setup(ctx):
     """Register memgit with AI coding tools (MCP).
 
-    Writes the memgit MCP server entry into each tool's config file.
-    Safe to run multiple times — only updates what's missing.
+    Run bare for an interactive picker, or use a subcommand:
+
+      memgit setup              # step-by-step: pick which tools to register
+      memgit setup all          # auto-register every detected tool
+      memgit setup claude-code  # register one specific tool
+
+    Safe to re-run — only updates what's missing.
     """
-    pass
+    if ctx.invoked_subcommand is None:
+        _setup_wizard()
 
 
 def _run_target(label: str, config_path: Path, patch_fn, dry_run: bool) -> None:
