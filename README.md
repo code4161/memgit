@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="memgit logo" width="120" />
+</p>
+
 # memgit — git for AI memory
 
 **Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs like code.**
@@ -412,7 +416,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Flat `memories/` directory — grep/diff/blame your memories
 - [x] D3.js graph visualization of memory relationships
 - [x] Multi-platform distribution (PyPI, Homebrew, npm, Chocolatey, winget)
-- [ ] PyPI publish (v0.1.0)
+- [x] PyPI published (v0.1.1)
 - [ ] VS Code extension (Phase 3)
 - [ ] JetBrains plugin (Phase 3)
 - [ ] Semantic search via embeddings (Phase 4)
