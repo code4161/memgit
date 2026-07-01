@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memgit"
+version = "0.1.0"
+description = "Git for AI memory — version-controlled context persistence across Claude, GPT, Gemini, Cursor, Windsurf, and more"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = [
+    "ai", "memory", "mcp", "claude", "cursor", "windsurf", "llm",
+    "context", "version-control", "agent", "chatgpt", "gemini"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-anyio>=0.0.0"]
+
+[project.urls]
+Homepage = "https://memgit.dev"
+Repository = "https://github.com/code4161/memgit"
+Documentation = "https://memgit.dev/docs"
+"Bug Tracker" = "https://github.com/code4161/memgit/issues"
+
+[project.scripts]
+memgit = "memgit.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["memgit*"]
+
+[tool.setuptools.package-data]
+memgit = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

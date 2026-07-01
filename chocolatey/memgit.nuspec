@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>memgit</id>
+    <version>0.1.0</version>
+    <packageSourceUrl>https://github.com/code4161/memgit</packageSourceUrl>
+    <owners>code4161</owners>
+    <title>memgit</title>
+    <authors>Hari Hara Sankar K A</authors>
+    <projectUrl>https://memgit.dev</projectUrl>
+    <licenseUrl>https://github.com/code4161/memgit/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/code4161/memgit</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/code4161/memgit/issues</bugTrackerUrl>
+    <tags>ai memory mcp claude cursor llm context version-control agent</tags>
+    <summary>Git for AI memory — persistent context across Claude, GPT, Cursor, Windsurf and more</summary>
+    <description>
+memgit gives your AI assistants persistent, version-controlled memory that follows you across tools.
+
+Switch from Claude to Cursor to ChatGPT mid-project and your context is already there.
+
+## Features
+- One command to register with all AI tools: `memgit setup all`
+- Works with Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Continue.dev
+- GPT Custom Actions and Gemini via HTTP server mode
+- BM25 search across all stored memories
+- Git-like version history — checkpoint, branch, diff
+
+## Quick start
+```
+memgit init
+memgit setup all
+memgit sync
+```
+    </description>
+    <releaseNotes>https://github.com/code4161/memgit/releases</releaseNotes>
+    <dependencies>
+      <dependency id="python3" version="3.11.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

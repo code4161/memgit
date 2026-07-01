@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "memgit": {
+      "type": "stdio",
+      "command": "memgit",
+      "args": ["serve"],
+      "_install_note": "Requires: pip install memgit && memgit init ~/.claude/memgit-store && memgit sync"
+    }
+  }
+}

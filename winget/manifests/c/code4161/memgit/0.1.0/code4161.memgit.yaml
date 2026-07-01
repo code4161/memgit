@@ -1,0 +1,39 @@
+PackageIdentifier: code4161.memgit
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Hari Hara Sankar K A
+PublisherUrl: https://memgit.dev
+PackageName: memgit
+PackageUrl: https://memgit.dev
+License: MIT
+LicenseUrl: https://github.com/code4161/memgit/blob/main/LICENSE
+ShortDescription: Git for AI memory — version-controlled context persistence across Claude, GPT, Cursor and more
+Description: |-
+  memgit gives your AI assistants persistent, version-controlled memory that follows you across tools.
+  Switch from Claude to Cursor to ChatGPT mid-project and your context is already there.
+
+  After installing Python: pip install memgit
+  Then: memgit setup all
+
+Tags:
+  - ai
+  - memory
+  - mcp
+  - claude
+  - cursor
+  - llm
+  - context
+ReleaseNotesUrl: https://github.com/code4161/memgit/releases/tag/v0.1.0
+Installers:
+  # winget doesn't natively run pip — this uses a PyPI wheel installer approach.
+  # TODO: After publishing to PyPI, generate a standalone Windows executable with:
+  #   pyinstaller --onefile memgit/cli.py --name memgit
+  # Upload the .exe to GitHub Releases and replace this URL + SHA256.
+  - Architecture: x64
+    InstallerType: exe
+    InstallerUrl: https://github.com/code4161/memgit/releases/download/v0.1.0/memgit-0.1.0-windows-x64.exe
+    InstallerSha256: REPLACE_AFTER_BUILDING_EXE
+    InstallerSwitches:
+      Silent: /S
+ManifestType: singleton
+ManifestVersion: 1.6.0
