@@ -163,7 +163,7 @@ If `memgit setup` fails, manually add this to each tool's config file:
 
 | Tool | Config file |
 |---|---|
-| Claude Code | `~/.claude/settings.json` |
+| Claude Code | `~/.claude.json` (user scope — Claude Code ignores `mcpServers` in `~/.claude/settings.json`) |
 | Claude Desktop (Mac) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Claude Desktop (Linux) | `~/.config/Claude/claude_desktop_config.json` |
 | Cursor | `~/.cursor/mcp.json` |

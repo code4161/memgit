@@ -2,7 +2,7 @@
   "name": "memgit",
   "displayName": "memgit — AI Memory Version Control",
   "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",

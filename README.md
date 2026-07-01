@@ -322,11 +322,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] `memgit git push/pull` — team sync via standard git
 - [x] Flat `memories/` directory — grep/diff/blame your memories
 - [x] D3.js graph visualization of memory relationships
-- [x] PyPI + Homebrew (tap) + npm published (v0.1.4)
+- [x] PyPI + Homebrew (tap) + npm published (v0.1.5)
 - [ ] Chocolatey (not yet live on community.chocolatey.org)
 - [x] Interactive setup wizard (`memgit setup`)
 - [x] Smart `memgit init` (auto-detects tool, no path needed)
-- [x] VS Code extension (v0.1.4, Marketplace: code416-memgit.memgit)
+- [x] VS Code extension (v0.1.5, Marketplace: code416-memgit.memgit)
 - [ ] JetBrains plugin (Phase 3)
 - [ ] Semantic search via embeddings (Phase 4)
 - [x] memgit.dev website (live)

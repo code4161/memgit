@@ -1,6 +1,6 @@
 {
   "name": "memgit-mcp",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "memgit MCP server — run as npx memgit-mcp. Git for AI memory.",
   "keywords": ["mcp", "ai", "memory", "claude", "cursor", "llm", "context"],

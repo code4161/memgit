@@ -1143,7 +1143,11 @@ def _patch_mcp_servers(config_path: Path, dry_run: bool = False) -> str:
         try:
             data = _json.loads(config_path.read_text(encoding='utf-8'))
         except _json.JSONDecodeError:
-            data = {}
+            # Never clobber an existing config we can't parse — for Claude Code
+            # this file (~/.claude.json) holds all user state, not just MCP.
+            raise RuntimeError(
+                f'{config_path} exists but is not valid JSON — fix it manually, then re-run setup'
+            )
     else:
         data = {}
 
@@ -1189,7 +1193,11 @@ def _patch_continue(config_path: Path, dry_run: bool = False) -> str:
     return 'registered'
 
 
-# Targets: (label, config_path_fn, patch_fn)
+# Targets: (label, config_path, patch_fn, detect_path)
+# detect_path: existence marks the tool as installed; None falls back to
+# "config file or its parent dir exists". Claude Code needs an explicit one
+# because its real MCP config (~/.claude.json) sits directly in $HOME —
+# Claude Code ignores mcpServers in ~/.claude/settings.json.
 def _all_targets():
     home = Path.home()
     app_support = home / 'Library' / 'Application Support'
@@ -1197,43 +1205,51 @@ def _all_targets():
     return [
         (
             'Claude Code',
-            home / '.claude' / 'settings.json',
+            home / '.claude.json',
             _patch_mcp_servers,
+            home / '.claude',
         ),
         (
             'Claude Desktop (macOS)',
             app_support / 'Claude' / 'claude_desktop_config.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Claude Desktop (Linux)',
             linux_config / 'Claude' / 'claude_desktop_config.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Cursor',
             home / '.cursor' / 'mcp.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Windsurf',
             home / '.windsurf' / 'mcp.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Cline (VS Code)',
             app_support / 'Code' / 'User' / 'globalStorage' / 'saoudrizwan.claude-dev' / 'settings' / 'cline_mcp_settings.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Roo-Code (VS Code)',
             app_support / 'Code' / 'User' / 'globalStorage' / 'rooveterinaryinc.roo-cline' / 'settings' / 'cline_mcp_settings.json',
             _patch_mcp_servers,
+            None,
         ),
         (
             'Continue.dev',
             home / '.continue' / 'config.json',
             _patch_continue,
+            None,
         ),
     ]
 
@@ -1243,10 +1259,13 @@ def _setup_wizard() -> None:
     targets = _all_targets()
 
     detected, missing = [], []
-    for label, config_path, patch_fn in targets:
-        (detected if config_path.exists() or config_path.parent.exists() else missing).append(
-            (label, config_path, patch_fn)
+    for label, config_path, patch_fn, detect_path in targets:
+        installed = (
+            detect_path.exists()
+            if detect_path is not None
+            else config_path.exists() or config_path.parent.exists()
         )
+        (detected if installed else missing).append((label, config_path, patch_fn))
 
     console.print('[bold]memgit setup[/bold] — interactive tool registration\n')
 
@@ -1327,6 +1346,33 @@ def _run_target(label: str, config_path: Path, patch_fn, dry_run: bool) -> None:
         console.print(f'[red]✗[/red] {label}: {e}')
 
 
+def _cleanup_legacy_claude_code(dry_run: bool = False) -> None:
+    """Drop the memgit entry from ~/.claude/settings.json if present.
+
+    Releases before 0.1.5 registered there, but Claude Code only loads MCP
+    servers from ~/.claude.json — the old entry is dead weight.
+    """
+    legacy = Path.home() / '.claude' / 'settings.json'
+    if not legacy.exists():
+        return
+    try:
+        data = _json.loads(legacy.read_text(encoding='utf-8'))
+    except _json.JSONDecodeError:
+        return
+    servers = data.get('mcpServers')
+    if not isinstance(servers, dict) or 'memgit' not in servers:
+        return
+    servers.pop('memgit')
+    if not servers:
+        data.pop('mcpServers', None)
+    if not dry_run:
+        _write_json_safe(legacy, data)
+    console.print(
+        f'[yellow]↻[/yellow] removed stale memgit entry from {legacy} '
+        f'[dim](Claude Code ignores mcpServers there)[/dim]'
+    )
+
+
 @setup.command('all')
 @click.option('--dry-run', is_flag=True, help='Show what would be changed without writing files.')
 def setup_all(dry_run):
@@ -1340,14 +1386,18 @@ def setup_all(dry_run):
 
     registered = 0
     skipped = 0
-    for label, config_path, patch_fn in _all_targets():
-        # Skip if neither the file nor its parent directory exists
-        # (tool not installed on this machine)
-        if not config_path.exists() and not config_path.parent.exists():
+    for label, config_path, patch_fn, detect_path in _all_targets():
+        installed = (
+            detect_path.exists()
+            if detect_path is not None
+            else config_path.exists() or config_path.parent.exists()
+        )
+        if not installed:
             skipped += 1
             continue
         _run_target(label, config_path, patch_fn, dry_run)
         registered += 1
+    _cleanup_legacy_claude_code(dry_run)
 
     console.print(f'\n[dim]{registered} tool(s) processed, {skipped} not installed (skipped)[/dim]')
     if not dry_run and registered:
@@ -1357,9 +1407,10 @@ def setup_all(dry_run):
 @setup.command('claude-code')
 @click.option('--dry-run', is_flag=True)
 def setup_claude_code(dry_run):
-    """Register with Claude Code (~/.claude/settings.json)."""
-    path = Path.home() / '.claude' / 'settings.json'
+    """Register with Claude Code (~/.claude.json, user scope)."""
+    path = Path.home() / '.claude.json'
     _run_target('Claude Code', path, _patch_mcp_servers, dry_run)
+    _cleanup_legacy_claude_code(dry_run)
 
 
 @setup.command('claude-desktop')
