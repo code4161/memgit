@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 # Install memgit via pip
-$pipArgs = @('install', 'memgit==0.1.5', '--upgrade')
+$pipArgs = @('install', 'memgit==0.2.0', '--upgrade')
 
 # Try pip3 first, then pip
 $pip = Get-Command pip3 -ErrorAction SilentlyContinue

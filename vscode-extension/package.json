@@ -1,8 +1,8 @@
 {
   "name": "memgit",
-  "displayName": "memgit — AI Memory Version Control",
+  "displayName": "Memgit Tool",
   "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",
@@ -160,7 +160,7 @@
             },
             "rule": {
               "type": "string",
-              "description": "The memory content — a concise rule, fact, or insight"
+              "description": "The memory content \u2014 a concise rule, fact, or insight"
             },
             "priority": {
               "type": "number",
