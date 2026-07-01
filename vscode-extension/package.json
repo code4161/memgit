@@ -2,7 +2,7 @@
   "name": "memgit",
   "displayName": "memgit — AI Memory Version Control",
   "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",
@@ -13,9 +13,22 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Other"],
-  "keywords": ["ai", "memory", "claude", "cursor", "copilot", "context", "memgit"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "memory",
+    "claude",
+    "cursor",
+    "copilot",
+    "context",
+    "memgit"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -131,7 +144,10 @@
     "languageModelTools": [
       {
         "name": "memgit_write",
-        "tags": ["memgit", "memory"],
+        "tags": [
+          "memgit",
+          "memory"
+        ],
         "toolReferenceName": "memgit-write",
         "displayName": "Save Memory",
         "modelDescription": "Save or update an AI memory in memgit. Call this to persist important facts, rules, or project context for future sessions.",
@@ -152,12 +168,18 @@
               "default": 2
             }
           },
-          "required": ["slug", "rule"]
+          "required": [
+            "slug",
+            "rule"
+          ]
         }
       },
       {
         "name": "memgit_query",
-        "tags": ["memgit", "memory"],
+        "tags": [
+          "memgit",
+          "memory"
+        ],
         "toolReferenceName": "memgit-query",
         "displayName": "Search Memories",
         "modelDescription": "Search stored AI memories by keyword. Use when you want to recall facts about this project or user that may not be in the current context.",
@@ -174,12 +196,17 @@
               "description": "Max results to return"
             }
           },
-          "required": ["query"]
+          "required": [
+            "query"
+          ]
         }
       },
       {
         "name": "memgit_forget",
-        "tags": ["memgit", "memory"],
+        "tags": [
+          "memgit",
+          "memory"
+        ],
         "toolReferenceName": "memgit-forget",
         "displayName": "Forget Memory",
         "modelDescription": "Mark a memory as superseded so it is no longer injected into future sessions.",
@@ -191,7 +218,9 @@
               "description": "Slug of the memory to forget"
             }
           },
-          "required": ["slug"]
+          "required": [
+            "slug"
+          ]
         }
       }
     ]
