@@ -53,6 +53,14 @@ class ApiClient:
             detail = r.json().get('detail', r.text)
         except ValueError:
             detail = r.text
+        if r.status_code == 402 and isinstance(detail, dict):
+            raise CloudError(
+                f"{detail.get('message', 'subscription required')}\n"
+                f"  upgrade: {detail.get('upgrade_url', 'https://app.memgit.dev/billing')}"
+            )
+        if r.status_code == 429:
+            retry = r.headers.get('Retry-After', '60')
+            raise CloudError(f'rate limited — retry in {retry}s')
         raise CloudError(f'API error {r.status_code}: {detail}')
 
     def _do_refresh(self) -> None:
