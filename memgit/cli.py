@@ -1810,3 +1810,19 @@ if __name__ == '__main__':
     # Required for the `python -m memgit.cli` fallback used by _memgit_cmd();
     # without it the module imports and exits silently.
     cli()
+
+
+# ── cloud (E2E-encrypted team sync — optional extra) ──────────────────────────
+
+try:
+    from .cloud.commands import cloud as _cloud_group
+    cli.add_command(_cloud_group)
+except Exception:
+    # extras missing or broken — plain memgit must keep working untouched
+    @cli.group()
+    def cloud():
+        """E2E-encrypted team sync — requires: pip install 'memgit[cloud]'"""
+
+    @cloud.command('setup', help="Show how to enable cloud sync.")
+    def _cloud_setup_hint():
+        console.print(r"Install the cloud extra first:  [bold]pip install 'memgit\[cloud]'[/bold]")
