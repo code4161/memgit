@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0] — 2026-07-03
+
+Lossless memories, project scoping, and mid-project onboarding — fixes from the first real multi-project dogfooding audit, where a 17,500-char project memory was found stored as a 360-char first paragraph and 8 projects' memories were flattened into one undifferentiated pile.
+
+### Added
+- **`body` field — memories are now lossless.** The full long-form content of a memory (multi-line markdown) is stored alongside the compact one-line `rule`. The Claude Code importer keeps the entire file body (previously: first paragraph only, truncated to 400 chars — ~98% data loss on rich memories). TOON stays line-oriented via `\n` escaping in field values; old objects' SHAs are unchanged. Search results stay lean (`has_body: true` flag); `get_memory` / `memgit show` return the full body. `memgit add --body` (or `--body -` for stdin) and the MCP `save_memory` `body` param write it.
+- **`project` field — memories know which workspace they belong to.** The importer derives it from the Claude Code projects directory; the MCP server auto-detects the current workspace (cwd, `MEMGIT_PROJECT` overrides) and (a) boosts the current project's memories in `search_memories` ranking, (b) leads `resume_session`'s recent-memories section with the current project instead of whatever project was touched last, (c) stamps `save_memory` writes. Hard filters: `search_memories`/`memgit search --project`, `memgit list --project`. `memgit stats` shows the per-project breakdown.
+- **`memgit onboard` — adopt memgit mid-project.** A store that starts empty on an existing codebase is useless until seeded. `onboard` prints a bootstrap brief for the AI operator: what to read (README, CLAUDE.md, manifests, git log), what to extract (10–20 durable facts), how to type/tag/prioritize them, and how to checkpoint the seed set. The MCP server also nudges: when a search misses AND the current project has zero memories, the reply explains how to bootstrap instead of a bare "No results found."
+- **Cross-project slug collision safety** — importing a slug that already exists under a *different* project re-slugs the incoming memory (`<slug>--<project>`) instead of silently overwriting.
+- **Guided `memgit init`** — after initializing, `init` automatically finds existing Claude Code memories (`~/.claude/projects/*/memory`), reports how many across how many projects, offers to import them on the spot (auto-imports when non-interactive), and prints the next steps. No more hunting for the right path to pass to `import claude-code` — the path argument was always optional, and now the flow says so.
+
+### Changed
+- **Importer keeps real metadata**: the frontmatter `description` is stored as `desc` (searchable), tags derive from the project label instead of the useless type-code tag, an optional `priority:`/`tags:` frontmatter key is honored, and `source` records the originating file path.
+- **`memgit sync` checkpoint messages name what changed** (`sync: +1 ~3 (crypto-module, …)`) when no `-m` is given — a history of "auto-sync on session stop" × 60 tells you nothing.
+- BM25 search now indexes `body` content (low field weight, so one-liner rules still rank first).
+- `memgit resume` is project-aware (label derived from cwd, `--project` overrides); recent memories from *other* projects are flagged `[Project-Name]` in the digest so agents don't conflate workspaces.
+
+### Fixed
+- Multi-line content in any TOON field no longer breaks parsing (values are `\n`-escaped on serialize, unescaped on parse).
+
 ## [0.2.0] — 2026-07-02
 
 Session resume, garbage collection, and multi-agent write safety.

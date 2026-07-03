@@ -33,7 +33,13 @@ _SERVER_DESCRIPTION = (
     "(2) Call save_memory whenever you learn something durable — a rule the user corrected you on, "
     "a preference they stated, a project decision, a lesson from a mistake. "
     "Do NOT wait for the user to ask you to remember — save proactively. "
-    "(3) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini."
+    "Put the one-line fact in 'rule' and the full details in 'body' — body is where "
+    "state, decisions, and context live losslessly. "
+    "(3) Memories are project-scoped: searches favor the project you are working in. "
+    "If the current project has NO memories yet (adopted mid-project), bootstrap it: "
+    "extract 10-20 durable facts from README/CLAUDE.md/docs/git history and save_memory "
+    "each — `memgit onboard` prints the full brief. "
+    "(4) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini."
 )
 
 _TYPE_DESCRIPTIONS = (
@@ -54,6 +60,23 @@ def _default_store() -> Path:
     return Path.home() / ".claude" / "memgit-store"
 
 
+def _detect_project() -> str | None:
+    """Label for the project this MCP server is serving.
+
+    MCP hosts (Claude Code, Cursor, …) launch stdio servers with cwd set to
+    the workspace, so the cwd is the project. MEMGIT_PROJECT overrides.
+    """
+    import os
+    env = os.environ.get("MEMGIT_PROJECT", "").strip()
+    if env:
+        return env
+    from .importer import project_label_from_path
+    try:
+        return project_label_from_path(Path.cwd())
+    except OSError:
+        return None
+
+
 def _load_repo(store_path: Path | None) -> Repository | None:
     path = store_path or _default_store()
     memgit_dir = path / ".memgit"
@@ -62,7 +85,8 @@ def _load_repo(store_path: Path | None) -> Repository | None:
     return Repository(memgit_dir)
 
 
-def _mnem_to_dict(m: Mnemonic, score: float | None = None) -> dict[str, Any]:
+def _mnem_to_dict(m: Mnemonic, score: float | None = None,
+                  include_body: bool = False) -> dict[str, Any]:
     d: dict[str, Any] = {
         "slug": m.slug,
         "type": m.type_code,
@@ -77,6 +101,12 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None) -> dict[str, Any]:
         d["tags"] = m.tags
     if m.desc:
         d["desc"] = m.desc
+    if m.project:
+        d["project"] = m.project
+    if include_body and m.body:
+        d["body"] = m.body
+    elif m.body:
+        d["has_body"] = True  # full detail available via get_memory
     if score is not None:
         d["score"] = round(score, 4)
     return d
@@ -154,6 +184,15 @@ def run_server(store_path: Path | None = None) -> None:
                             "type": "string",
                             "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
                             "description": _TYPE_DESCRIPTIONS,
+                        },
+                        "project": {
+                            "type": "string",
+                            "description": (
+                                "Hard-filter to one project's memories. Usually UNNECESSARY — "
+                                "the current project is auto-detected and its memories are "
+                                "boosted, while global rules still surface. Set only to look "
+                                "at a specific other project."
+                            ),
                         },
                         "format": {
                             "type": "string",
@@ -247,6 +286,21 @@ def run_server(store_path: Path | None = None) -> None:
                                 "Write as a declarative statement: 'always X', 'never Y', 'Z is located at ...'"
                             ),
                         },
+                        "body": {
+                            "type": "string",
+                            "description": (
+                                "Full long-form detail behind the rule — state, decisions, code paths, "
+                                "context. Multi-line markdown welcome; this is stored losslessly and "
+                                "returned by get_memory. Use it instead of cramming detail into 'rule'."
+                            ),
+                        },
+                        "project": {
+                            "type": "string",
+                            "description": (
+                                "Project this memory belongs to. Defaults to the current workspace — "
+                                "set explicitly only for global facts (pass empty string) or another project."
+                            ),
+                        },
                         "type_code": {
                             "type": "string",
                             "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
@@ -315,23 +369,43 @@ def run_server(store_path: Path | None = None) -> None:
             from .cli import _format_resume_plain
             n_ck = int(arguments.get("checkpoints", 5))
             n_recent = int(arguments.get("recent", 10))
-            ctx = repo.resume_context(checkpoints=n_ck, recent=n_recent)
+            ctx = repo.resume_context(checkpoints=n_ck, recent=n_recent,
+                                      project=_detect_project())
             return [TextContent(type="text", text=_format_resume_plain(ctx))]
 
         elif name == "search_memories":
             query = arguments.get("query", "")
             top_k = min(int(arguments.get("top_k", 8)), 30)
             type_filter = arguments.get("type_filter")
+            project_filter = arguments.get("project")
             fmt = arguments.get("format", "json")
+            current_project = _detect_project()
 
             mnemonics = repo.list()
             if type_filter:
                 mnemonics = [m for m in mnemonics if m.type_code == type_filter]
+            if project_filter:
+                mnemonics = [m for m in mnemonics if m.project == project_filter]
 
-            results = bm25_score(query, mnemonics, top_k=top_k)
+            results = bm25_score(query, mnemonics, top_k=top_k,
+                                 boost_project=current_project)
 
             if not results:
-                return [TextContent(type="text", text="No results found.")]
+                text = "No results found."
+                # Fresh-adoption nudge: this project has nothing saved at all.
+                if current_project and not any(
+                    m.project == current_project for m in mnemonics
+                ):
+                    text += (
+                        f"\n\nNOTE: project '{current_project}' has NO memories yet — "
+                        "memgit was likely adopted mid-project, so there is no initial "
+                        "context to search. Bootstrap it now (once): read README/CLAUDE.md/"
+                        "docs and `git log --oneline -30`, extract 10-20 durable facts "
+                        "(purpose, architecture, conventions, current state, gotchas), and "
+                        "save_memory each with a one-line rule + full body. "
+                        "`memgit onboard` prints the complete brief."
+                    )
+                return [TextContent(type="text", text=text)]
 
             if fmt == "toon":
                 lines = [f"# search: {query!r}  ({len(results)} results)\n"]
@@ -356,7 +430,7 @@ def run_server(store_path: Path | None = None) -> None:
             if fmt == "toon":
                 text = serialize_mnemonic(m)
             else:
-                text = json.dumps(_mnem_to_dict(m), indent=2)
+                text = json.dumps(_mnem_to_dict(m, include_body=True), indent=2)
 
             return [TextContent(type="text", text=text)]
 
@@ -377,7 +451,8 @@ def run_server(store_path: Path | None = None) -> None:
             lines = [f"# {len(mnemonics)} memories"]
             for m in mnemonics:
                 rule_preview = m.rule[:80] + ".." if len(m.rule) > 80 else m.rule
-                lines.append(f"{m.slug}\t[{m.type_code}p{m.priority}]\t{rule_preview}")
+                proj = f" {m.project}" if m.project else ""
+                lines.append(f"{m.slug}\t[{m.type_code}p{m.priority}{proj}]\t{rule_preview}")
 
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -391,8 +466,15 @@ def run_server(store_path: Path | None = None) -> None:
             type_code = arguments.get("type_code", "fb")
             why = arguments.get("why")
             when = arguments.get("when")
+            body = arguments.get("body")
             tags = arguments.get("tags", [])
             priority = int(arguments.get("priority", 2))
+            # project: explicit value wins; empty string = deliberately global;
+            # absent = the workspace this server is running in.
+            if "project" in arguments:
+                project = (arguments.get("project") or "").strip() or None
+            else:
+                project = _detect_project()
 
             existing = repo.get(slug)
             now = datetime.now(timezone.utc)
@@ -406,6 +488,8 @@ def run_server(store_path: Path | None = None) -> None:
                 tags=tags if isinstance(tags, list) else [],
                 why=why,
                 when=when,
+                body=body,
+                project=project,
             )
 
             repo.add(m)
@@ -419,6 +503,7 @@ def run_server(store_path: Path | None = None) -> None:
                     "slug": slug,
                     "type": type_code,
                     "priority": priority,
+                    "project": project,
                 }, indent=2),
             )]
 

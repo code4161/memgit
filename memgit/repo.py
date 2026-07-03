@@ -796,13 +796,18 @@ class Repository:
 
     # ── Resume (session-start orientation) ────────────────────────────────────
 
-    def resume_context(self, checkpoints: int = 5, recent: int = 10) -> dict:
+    def resume_context(self, checkpoints: int = 5, recent: int = 10,
+                       project: Optional[str] = None) -> dict:
         """A bounded digest of 'where we left off' for session start.
 
         Structured for an AI agent picking up work: last checkpoints (what
         happened), staged-but-uncommitted changes (work in flight), recently
         updated memories (what changed lately), and critical memories (rules
         that always apply). Deliberately compact — a resume primer, not a dump.
+
+        project: when given and the store has memories for it, the recent
+        list is drawn from that project first — a session in project A should
+        not open with project B's latest work.
         """
         thread = self.current_thread()
         head = self.head_sha()
@@ -835,10 +840,17 @@ class Repository:
         # Recently updated memories (by mnemonic timestamp) + critical set
         mnemonics = self.list()
         by_recency = sorted(mnemonics, key=lambda m: m.timestamp, reverse=True)
+        pool = by_recency
+        if project:
+            in_project = [m for m in by_recency if m.project == project]
+            if in_project:
+                # project memories first, then global fill up to the cap
+                rest = [m for m in by_recency if m.project != project]
+                pool = in_project + rest
         recent_mems = [
             {'slug': m.slug, 'type': m.type_code, 'priority': m.priority,
-             'timestamp': m.timestamp, 'rule': m.rule}
-            for m in by_recency[:recent]
+             'timestamp': m.timestamp, 'rule': m.rule, 'project': m.project}
+            for m in pool[:recent]
         ]
         critical = [
             {'slug': m.slug, 'rule': m.rule}
@@ -848,6 +860,7 @@ class Repository:
         count, first_ts = self.chain_info(thread)
         return {
             'thread': thread,
+            'project': project,
             'head': (head or '')[:8],
             'checkpoint_count': count,
             'history_since': first_ts,
@@ -1304,6 +1317,11 @@ class Repository:
         for m in mnemonics:
             by_type[m.type_code] = by_type.get(m.type_code, 0) + 1
 
+        by_project: dict[str, int] = {}
+        for m in mnemonics:
+            key = m.project or '(global)'
+            by_project[key] = by_project.get(key, 0) + 1
+
         ck_count, first_ts = self.chain_info()   # O(1) via cache, not a walk
         last = self.log(limit=1)
         obj_count, obj_bytes = self.disk_usage()
@@ -1311,6 +1329,7 @@ class Repository:
         return {
             'total': len(mnemonics),
             'by_type': by_type,
+            'by_project': by_project,
             'priority_counts': {
                 3: sum(1 for m in mnemonics if m.priority == 3),
                 2: sum(1 for m in mnemonics if m.priority == 2),

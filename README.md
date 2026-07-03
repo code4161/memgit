@@ -21,6 +21,8 @@ You've probably already tried both. Here's why they hit a ceiling:
 | Capability | claude.md | mem-search plugin | **memgit** |
 |---|---|---|---|
 | Loads only relevant context | ❌ loads everything | ⚠️ loads recent observations | ✅ BM25 search — top-k per query |
+| Project-aware across a multi-repo life | ❌ per-file | ❌ | ✅ memories carry a `project`; the current workspace ranks first |
+| Adopt on an existing codebase | ❌ starts blank | ❌ starts blank | ✅ `memgit onboard` — seed the store from the repo in one pass |
 | Version history | ❌ | ❌ | ✅ full commit log |
 | Diff between sessions | ❌ | ❌ | ✅ `memgit diff` |
 | Roll back a wrong memory | ❌ manual edit | ❌ | ✅ `memgit rollback` |
@@ -135,19 +137,34 @@ pip install memgit
 ```bash
 # 1. Install and initialize
 pip install memgit
-memgit init               # auto-detects best location (~/.claude/memgit-store etc.)
+memgit init               # auto-detects the best location, finds your existing
+                          # Claude Code memories, and offers to import them
 
-# 2. Import existing memories (if you use Claude Code)
-memgit import claude-code ~/.claude/projects/
-
-# 3. Register with your AI tools (interactive picker)
+# 2. Register with your AI tools (interactive picker)
 memgit setup
 
-# 4. See your token savings
+# 3. See your token savings
 memgit stats
 ```
 
+`init` walks you through it — no paths to hunt down. (Importing later is one command with no arguments: `memgit sync` auto-finds `~/.claude/projects/*/memory`.)
+
 Restart your AI tool — it now searches your memory store at the start of every session.
+
+---
+
+## Adopting memgit mid-project
+
+Memory tools have a cold-start problem: install one halfway through a project and it knows *nothing* — there's no initial point, and context only trickles in from future sessions. memgit solves this with a one-time seeding pass:
+
+```bash
+cd your-project
+memgit onboard          # prints the bootstrap brief
+```
+
+The brief tells your AI agent exactly what to do: read the README/docs/manifests and recent git history, extract 10–20 durable facts (purpose, architecture, conventions, current state, gotchas), save each as a typed memory, and checkpoint the seed set. Paste it into a session — or don't: if the AI searches memory in a project that has none, the MCP server itself replies with the bootstrap instructions instead of a bare "no results."
+
+Memories are **project-scoped**: each carries the workspace it belongs to, searches boost the project you're standing in (global rules still surface), and the resume digest leads with *your current project's* recent work — not whatever repo you touched last night.
 
 ---
 
@@ -229,7 +246,8 @@ The tool descriptions teach the AI **judgment** — "does this request depend on
 ```bash
 # Core (git-like)
 memgit init                       # initialize store (auto-detects best path)
-memgit add <slug> <rule>          # stage a memory
+memgit onboard                    # bootstrap brief for an existing codebase
+memgit add <slug> <rule>          # stage a memory (--body for full detail, --project to scope)
 memgit commit -m "message"        # checkpoint current state
 memgit log                        # history
 memgit diff [sha1] [sha2]         # what changed
@@ -249,8 +267,8 @@ memgit lint                       # validate all memories
 memgit fsck                       # verify store integrity
 
 # Import / export
-memgit sync                       # sync from Claude Code files + commit
-memgit import claude-code <path>
+memgit sync                       # sync from Claude Code files + commit (auto-finds them)
+memgit import claude-code [path]  # path optional — defaults to ~/.claude/projects/*/memory
 memgit import file <path>
 memgit export <slug>
 
@@ -315,9 +333,11 @@ The same memory in TOON:
 ```
 TOON1|fb|no-db-mock|2026-07-01T10:00Z
 #testing #database
+PROJ:my-app
 RULE:Never mock the database in tests
 WHY:Mocked tests passed but prod migration failed last quarter
 WHEN:Any persistence test
+BODY:Full long-form detail lives here, losslessly (newlines escaped).\nSearch returns the compact RULE; get_memory returns everything.
 ```
 
 Measured with a real tokenizer, TOON is ~5–10% leaner than equivalent markdown — a nice bonus, not the headline. **The headline saving is retrieval**: memgit loads the top-8 relevant memories per query instead of everything.
@@ -377,6 +397,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Chocolatey (not yet live on community.chocolatey.org)
 - [x] Interactive setup wizard (`memgit setup`)
 - [x] Smart `memgit init` (auto-detects tool, no path needed)
+- [x] Lossless memories — full `body` alongside the compact rule (v0.3.0)
+- [x] Project-scoped memories + `memgit onboard` mid-project bootstrap (v0.3.0)
 - [x] VS Code extension (v0.1.5, Marketplace: code416-memgit.memgit)
 - [ ] JetBrains plugin (Phase 3)
 - [ ] Semantic search via embeddings (Phase 4)

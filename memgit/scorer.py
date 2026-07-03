@@ -33,6 +33,7 @@ def _field_tokens(m: "Mnemonic") -> dict[str, list[str]]:
         "when": _tokenize(m.when or ""),
         "tags": _tokenize(" ".join(m.tags)),
         "desc": _tokenize(m.desc or ""),
+        "body": _tokenize(m.body or ""),
     }
 
 
@@ -44,7 +45,12 @@ _FIELD_WEIGHT = {
     "why": 1.0,
     "when": 0.8,
     "desc": 0.6,
+    "body": 0.4,
 }
+
+# Score multiplier for memories belonging to the project being worked on.
+# An affinity nudge, not a filter — global rules still surface everywhere.
+_PROJECT_BOOST = 1.25
 
 # BM25 parameters
 _K1 = 1.5
@@ -65,8 +71,14 @@ def score(
     query: str,
     mnemonics: list["Mnemonic"],
     top_k: int = 10,
+    boost_project: str = None,
 ) -> list[ScoredMnemonic]:
-    """Score mnemonics against query and return top-k by relevance."""
+    """Score mnemonics against query and return top-k by relevance.
+
+    boost_project: memories whose .project matches get a relevance nudge,
+    so the current workspace's memories outrank same-text matches from
+    other projects without hiding global rules.
+    """
     if not query.strip() or not mnemonics:
         return []
 
@@ -115,6 +127,10 @@ def score(
 
         # Priority boost
         score_val *= _PRIORITY_BOOST.get(m.priority, 1.0)
+
+        # Project affinity boost
+        if boost_project and m.project == boost_project:
+            score_val *= _PROJECT_BOOST
 
         if score_val > 0:
             results.append(ScoredMnemonic(m, round(score_val, 4), matched))

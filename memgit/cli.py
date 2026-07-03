@@ -80,7 +80,35 @@ def init(directory):
         return
     repo = Repository.init(path)
     console.print(f'[green]Initialized[/green] memgit store in [cyan]{repo.path}[/cyan]')
-    console.print(f'[dim]Run [bold]memgit setup[/bold] to register with your AI tools.[/dim]')
+
+    # Step-by-step flow: find existing memories automatically and offer the
+    # import, instead of making the user discover the right path themselves.
+    try:
+        from .importer import from_claude_code
+        found = from_claude_code()
+    except Exception:
+        found = []
+    if found:
+        projects = {m.project for m in found if m.project}
+        console.print(f'\nFound [bold]{len(found)}[/bold] existing Claude Code memories '
+                      f'across [bold]{len(projects)}[/bold] projects '
+                      f'[dim](~/.claude/projects/*/memory)[/dim]')
+        do_import = True
+        if sys.stdin.isatty():
+            do_import = click.confirm('Import them now?', default=True)
+        if do_import:
+            count, skipped, renamed = _stage_imported(repo, found)
+            sha = repo.commit(message=f'onboard: imported {count} Claude Code memories',
+                              trigger='import')
+            console.print(f'[green]Imported {count} memories[/green]'
+                          + (f'  [dim]checkpoint {sha[:8]}[/dim]' if sha else ''))
+        else:
+            console.print('[dim]Skipped — run [bold]memgit sync[/bold] anytime to import.[/dim]')
+
+    console.print(f'\n[bold]Next steps[/bold]')
+    console.print(f'  1. [bold]memgit setup[/bold]    register with your AI tools (interactive)')
+    console.print(f'  2. [bold]memgit onboard[/bold]  seed memories for a project that has none')
+    console.print(f'  3. [bold]memgit stats[/bold]    see what you saved')
 
 
 # ── add ───────────────────────────────────────────────────────────────────────
@@ -96,7 +124,11 @@ def init(directory):
 @click.option('--tags', default=None, help='Comma-separated tags')
 @click.option('--priority', '-p', default=2, type=click.IntRange(1, 3),
               help='1=low  2=medium  3=critical (always loaded)')
-def add(slug, rule, type_code, why, when, tags, priority):
+@click.option('--body', '-b', default=None,
+              help='Full long-form detail (multi-line ok, or "-" to read stdin)')
+@click.option('--project', '-P', default=None,
+              help='Project this memory belongs to (see `memgit list`)')
+def add(slug, rule, type_code, why, when, tags, priority, body, project):
     """Add or update a mnemonic.
 
     SLUG  kebab-case identifier (e.g. ig-pipeline-no-fallback)\n
@@ -104,6 +136,8 @@ def add(slug, rule, type_code, why, when, tags, priority):
     """
     repo = _require_repo()
     tag_list = [t.strip() for t in tags.split(',')] if tags else []
+    if body == '-':
+        body = sys.stdin.read().strip() or None
 
     m = Mnemonic(
         type_code=type_code,
@@ -114,6 +148,8 @@ def add(slug, rule, type_code, why, when, tags, priority):
         when=when,
         tags=tag_list,
         priority=priority,
+        body=body,
+        project=project,
     )
     sha = repo.add(m)
     console.print(f'[green]staged[/green]  {slug} [{sha[:8]}]')
@@ -204,17 +240,24 @@ def status():
 @click.option('--recent', '-r', default=10, help='Recently updated memories to include')
 @click.option('--plain', is_flag=True, help='Plain text (for hooks / piping into an AI context)')
 @click.option('--json', 'fmt_json', is_flag=True, help='JSON output')
-def resume(checkpoints, recent, plain, fmt_json):
+@click.option('--project', '-P', default=None,
+              help='Prefer this project\'s memories in the digest '
+                   '(default: derived from the current directory)')
+def resume(checkpoints, recent, plain, fmt_json, project):
     """Show where you left off — the session-start primer.
 
     Prints the last checkpoints, staged work in flight, recently updated
     memories, and critical rules. Designed to orient an AI agent (or you)
     at the start of a session. Wire it into Claude Code automatically with
-    `memgit setup hooks`.
+    `memgit setup hooks`. Runs project-aware: the recent-memories section
+    leads with the project you are standing in.
     """
     import json as _j
+    from .importer import project_label_from_path
     repo = _require_repo()
-    ctx = repo.resume_context(checkpoints=checkpoints, recent=recent)
+    if project is None:
+        project = project_label_from_path(Path.cwd())
+    ctx = repo.resume_context(checkpoints=checkpoints, recent=recent, project=project)
 
     if fmt_json:
         print(_j.dumps(ctx, indent=2, default=str))
@@ -271,9 +314,10 @@ def _format_resume_plain(ctx: dict) -> str:
     def clip(text: str, n: int = 200) -> str:
         return text if len(text) <= n else text[:n - 1] + '…'
 
+    proj = f' · project {ctx["project"]}' if ctx.get('project') else ''
     lines = [
         f'# memgit resume — thread {ctx["thread"]} @ {ctx["head"] or "none"} '
-        f'({ctx["checkpoint_count"]} checkpoints, {ctx["total_memories"]} memories)',
+        f'({ctx["checkpoint_count"]} checkpoints, {ctx["total_memories"]} memories{proj})',
     ]
     st = ctx['staged']
     if st['new'] or st['updated'] or st['removed']:
@@ -296,7 +340,10 @@ def _format_resume_plain(ctx: dict) -> str:
         lines.append('## Recently updated memories')
         for m in ctx['recent_memories']:
             ts = m['timestamp'].strftime('%Y-%m-%d')
-            lines.append(f'- {m["slug"]} ({m["type"]}, {ts}): {clip(m["rule"], 160)}')
+            # flag memories from OTHER projects so the agent doesn't conflate them
+            other = (f' [{m["project"]}]'
+                     if m.get('project') and m['project'] != ctx.get('project') else '')
+            lines.append(f'- {m["slug"]} ({m["type"]}, {ts}){other}: {clip(m["rule"], 160)}')
     if ctx['critical_memories']:
         lines.append('')
         lines.append('## Critical rules — always apply')
@@ -312,6 +359,72 @@ def _format_resume_plain(ctx: dict) -> str:
     lines.append('(Check work-in-flight and the last checkpoints before assuming state; '
                  'use memgit search for anything task-specific.)')
     return '\n'.join(lines)
+
+
+# ── onboard ───────────────────────────────────────────────────────────────────
+
+ONBOARD_BRIEF = """\
+# memgit onboard — bootstrap memory for {project}
+
+This project has {count} memories in memgit{count_note}. A memory store that
+starts empty mid-project is useless until it is seeded — do that now, once,
+and every future session (in any AI tool) starts oriented.
+
+## Instructions for the AI operator
+
+Extract 10–20 DURABLE facts about this project and save each one as a memory
+(via the memgit MCP `save_memory` tool, or `memgit add` in a shell).
+Read, in this order, whatever exists:
+
+1. README / CLAUDE.md / CONTRIBUTING / docs/ — purpose, architecture, setup
+2. Package manifests (package.json, pyproject.toml, go.mod, …) — stack, entry points, scripts
+3. `git log --oneline -30` and recent PRs — what is being worked on RIGHT NOW
+4. Config/env samples, CI files — deploy targets, environments, gates
+5. The code layout itself — modules, boundaries, naming conventions
+
+## What to save (one memory each, not a dump)
+
+- `pj` project: what this project IS, its goal, its current state / active work
+- `cn` convention: code style, naming, architecture rules an AI must follow
+- `rf` reference: key entry points, dashboards, external services, URLs
+- `fb` feedback: known constraints ("never touch X", "Y is production")
+- `lx` lesson: past incidents or gotchas documented in the repo
+
+Rules for good memories: one fact per memory; kebab-case slug; a one-line
+`rule` stating the fact; details in `body`; set `project` to "{project}";
+priority 3 ONLY for always-apply safety rules; tag with real topics.
+
+## Finish
+
+Checkpoint the seed set so it is versioned from day one:
+
+    memgit commit -m "onboard: {project}"
+
+Then verify: `memgit search "<something about this project>"` should hit.
+"""
+
+
+@cli.command()
+@click.option('--project', '-P', default=None,
+              help='Project label (default: derived from the current directory)')
+@click.option('--path', 'proj_path', default='.', type=click.Path(exists=True),
+              help='Project directory to onboard (default: cwd)')
+def onboard(project, proj_path):
+    """Print the bootstrap brief for adopting memgit on an existing project.
+
+    memgit only knows what has been saved — a project adopted midway starts
+    with zero context. This prints a step-by-step brief for an AI agent (or
+    you) to seed the store from the codebase: README, docs, git history,
+    conventions. Paste it into your AI session, or run
+    `memgit onboard | pbcopy`.
+    """
+    from .importer import project_label_from_path
+
+    repo = _require_repo()
+    label = project or project_label_from_path(Path(proj_path)) or Path(proj_path).resolve().name
+    count = sum(1 for m in repo.list() if m.project == label)
+    count_note = '' if count else ' — it is a blank slate for this project'
+    print(ONBOARD_BRIEF.format(project=label, count=count, count_note=count_note))
 
 
 # ── log ───────────────────────────────────────────────────────────────────────
@@ -454,7 +567,8 @@ def show(slug, toon, fmt_markdown):
     else:
         sha_s = m.sha[:8] if m.sha else '?'
         p_label = {1: 'low', 2: 'medium', 3: '[bold red]CRITICAL[/bold red]'}[m.priority]
-        console.print(f'[bold cyan]{m.slug}[/bold cyan]  [{m.type_code}]  priority={p_label}  sha={sha_s}')
+        proj = f'  project={m.project}' if m.project else ''
+        console.print(f'[bold cyan]{m.slug}[/bold cyan]  [{m.type_code}]  priority={p_label}{proj}  sha={sha_s}')
         console.print(f'')
         console.print(f'[bold]RULE[/bold] {m.rule}')
         if m.why:
@@ -463,6 +577,9 @@ def show(slug, toon, fmt_markdown):
             console.print(f'[bold]WHEN[/bold] {m.when}')
         if m.desc:
             console.print(f'[bold]DESC[/bold] {m.desc}')
+        if m.body:
+            console.print(f'\n[bold]BODY[/bold]')
+            console.print(m.body)
         if m.who:
             console.print(f'[bold]WHO[/bold]  {m.who}')
         if m.where:
@@ -486,8 +603,9 @@ def show(slug, toon, fmt_markdown):
               type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx']),
               help='Filter by type')
 @click.option('--priority', '-p', default=None, type=click.IntRange(1, 3), help='Filter by priority')
+@click.option('--project', '-P', 'project_filter', default=None, help='Filter by project')
 @click.option('--toon', is_flag=True, help='Show TOON format')
-def list_cmd(type_filter, priority, toon):
+def list_cmd(type_filter, priority, project_filter, toon):
     """List all mnemonics in the current thread."""
     repo = _require_repo()
     mnemonics = repo.list()
@@ -495,6 +613,8 @@ def list_cmd(type_filter, priority, toon):
         mnemonics = [m for m in mnemonics if m.type_code == type_filter]
     if priority:
         mnemonics = [m for m in mnemonics if m.priority == priority]
+    if project_filter:
+        mnemonics = [m for m in mnemonics if m.project == project_filter]
     mnemonics.sort(key=lambda m: (m.type_code, m.slug))
 
     if not mnemonics:
@@ -511,12 +631,14 @@ def list_cmd(type_filter, priority, toon):
     table.add_column('Slug', style='cyan', min_width=20)
     table.add_column('T', width=2)
     table.add_column('P', width=1)
-    table.add_column('Rule', max_width=70)
+    table.add_column('Project', style='dim', max_width=18)
+    table.add_column('Rule', max_width=60)
 
     for m in mnemonics:
         p_str = '!' if m.priority == 3 else str(m.priority)
-        rule_preview = m.rule[:68] + '..' if len(m.rule) > 68 else m.rule
-        table.add_row(m.slug, m.type_code, p_str, rule_preview)
+        proj = (m.project or '')[:18]
+        rule_preview = m.rule[:58] + '..' if len(m.rule) > 58 else m.rule
+        table.add_row(m.slug, m.type_code, p_str, proj, rule_preview)
 
     console.print(table)
     console.print(f'\n[dim]{len(mnemonics)} mnemonic{"s" if len(mnemonics) != 1 else ""}[/dim]')
@@ -557,13 +679,11 @@ def import_claude_code(path, dry_run, no_commit):
             console.print(f'  [cyan]{m.slug}[/cyan] [{m.type_code}]  {rule_preview}')
         return
 
-    count = 0
-    for m in mnemonics:
-        try:
-            repo.add(m)
-            count += 1
-        except Exception as e:
-            err.print(f'[yellow]skip {m.slug}: {e}[/yellow]')
+    count, skipped, renamed = _stage_imported(repo, mnemonics)
+    for slug in renamed:
+        console.print(f'  [yellow]collision[/yellow] stored as [cyan]{slug}[/cyan]')
+    if skipped:
+        err.print(f'[yellow]{skipped} skipped (parse/stage errors)[/yellow]')
 
     console.print(f'[green]Staged {count} memories[/green]')
 
@@ -722,7 +842,9 @@ import re  # noqa: E402 — needed for lint command
 @click.option('--type', '-t', 'type_filter', default=None,
               type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx']),
               help='Filter by type before scoring')
-def search(query, top, toon, fmt_json, type_filter):
+@click.option('--project', '-P', 'project_filter', default=None,
+              help='Only memories from this project (as shown in `memgit list`)')
+def search(query, top, toon, fmt_json, type_filter, project_filter):
     """Search memories by relevance.
 
     Returns the top-k mnemonics scored against QUERY using BM25.
@@ -734,6 +856,8 @@ def search(query, top, toon, fmt_json, type_filter):
     mnemonics = repo.list()
     if type_filter:
         mnemonics = [m for m in mnemonics if m.type_code == type_filter]
+    if project_filter:
+        mnemonics = [m for m in mnemonics if m.project == project_filter]
 
     results = bm25_score(query, mnemonics, top_k=top)
 
@@ -782,6 +906,49 @@ def search(query, top, toon, fmt_json, type_filter):
 
 # ── sync ──────────────────────────────────────────────────────────────────────
 
+def _stage_imported(repo, mnemonics) -> tuple[int, int, list[str]]:
+    """Stage imported mnemonics, re-slugging cross-project collisions.
+
+    If an incoming slug already belongs to a DIFFERENT project, the incoming
+    memory is stored as '<slug>--<project>' instead of silently overwriting.
+    Returns (staged, skipped, renamed_slugs).
+    """
+    count = skipped = 0
+    renamed: list[str] = []
+    for m in mnemonics:
+        try:
+            existing = repo.get(m.slug)
+            if (existing is not None and m.project and existing.project
+                    and existing.project != m.project):
+                suffix = re.sub(r'[^a-z0-9-]+', '-', m.project.lower()).strip('-')
+                m.slug = f'{m.slug}--{suffix}'
+                renamed.append(m.slug)
+            repo.add(m)
+            count += 1
+        except Exception:
+            skipped += 1
+    return count, skipped, renamed
+
+
+def _staged_diff_message(repo) -> Optional[str]:
+    """Build a checkpoint message from what is actually staged vs HEAD."""
+    index = repo.get_index()
+    committed = repo._mindstate_map(repo.head_sha())
+    new = sorted(s for s in index if s not in committed)
+    upd = sorted(s for s in index if s in committed and index[s] != committed[s])
+    rem = sorted(s for s in committed if s not in index)
+    if not (new or upd or rem):
+        return None
+    changed = new + upd
+    preview = ', '.join(changed[:4]) + (', …' if len(changed) > 4 else '')
+    parts = [f'+{len(new)}'] if new else []
+    if upd:
+        parts.append(f'~{len(upd)}')
+    if rem:
+        parts.append(f'-{len(rem)}')
+    return f'sync: {" ".join(parts)} ({preview})' if preview else f'sync: {" ".join(parts)}'
+
+
 @cli.command()
 @click.option('--message', '-m', default=None, help='Custom checkpoint message')
 @click.option('--dry-run', is_flag=True, help='Show what would be imported, no writes')
@@ -790,6 +957,7 @@ def sync(message, dry_run):
 
     Imports all Claude Code markdown memory files, stages changes,
     and creates a checkpoint if anything changed. Safe to run repeatedly.
+    The checkpoint message names what actually changed.
     """
     from .importer import from_claude_code
 
@@ -803,26 +971,22 @@ def sync(message, dry_run):
     if dry_run:
         console.print(f'Would import [bold]{len(mnemonics)}[/bold] memories:')
         for m in mnemonics[:10]:
-            console.print(f'  [cyan]{m.slug}[/cyan] [{m.type_code}]')
+            proj = f'  [dim]{m.project}[/dim]' if m.project else ''
+            console.print(f'  [cyan]{m.slug}[/cyan] [{m.type_code}]{proj}')
         if len(mnemonics) > 10:
             console.print(f'  [dim]… and {len(mnemonics) - 10} more[/dim]')
         return
 
-    count = 0
-    skipped = 0
-    for m in mnemonics:
-        try:
-            repo.add(m)
-            count += 1
-        except Exception:
-            skipped += 1
+    count, skipped, renamed = _stage_imported(repo, mnemonics)
+    for slug in renamed:
+        console.print(f'  [yellow]collision[/yellow] stored as [cyan]{slug}[/cyan]')
 
-    msg = message or f'sync: {count} memories from Claude Code'
+    msg = message or _staged_diff_message(repo) or f'sync: {count} memories from Claude Code'
     sha = repo.commit(message=msg, trigger='session_end')
 
     if sha:
-        console.print(f'[green]sync[/green]  {sha[:8]}  {count} staged' +
-                      (f', {skipped} skipped' if skipped else ''))
+        console.print(f'[green]sync[/green]  {sha[:8]}  {msg}' +
+                      (f'  [dim]({skipped} skipped)[/dim]' if skipped else ''))
     else:
         console.print(f'[dim]sync: no changes ({count} memories already current)[/dim]')
 
@@ -987,6 +1151,13 @@ def stats(fmt_json):
 
     t.add_row('Total memories', f'[bold]{s["total"]}[/bold]   {type_str}')
     t.add_row('Priority breakdown', prio_str)
+    by_project = s.get('by_project') or {}
+    if len(by_project) > 1:
+        top = sorted(by_project.items(), key=lambda kv: -kv[1])
+        proj_str = ' · '.join(f'{n} {name}' for name, n in top[:6])
+        if len(top) > 6:
+            proj_str += f' · … {len(top) - 6} more'
+        t.add_row('Projects', f'{len(by_project)}   {proj_str}')
     t.add_row('Checkpoints', f'{ck_count}   {first_ts} → {last_ts}')
     console.print(t)
     console.print()

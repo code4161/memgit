@@ -17,6 +17,34 @@ from .models import Mnemonic, MindState, MindStateEntry, Checkpoint, DiffSummary
 USER_TYPE_CODES = {"fb", "us", "pj", "rf", "cn", "lx"}
 
 
+def _esc(value: str) -> str:
+    """Escape a field value for TOON's one-line-per-field layout."""
+    return value.replace('\\', '\\\\').replace('\n', '\\n')
+
+
+def _unesc(value: str) -> str:
+    """Reverse _esc. Left-to-right so escaped backslashes round-trip."""
+    if '\\' not in value:
+        return value
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if c == '\\' and i + 1 < len(value):
+            nxt = value[i + 1]
+            if nxt == 'n':
+                out.append('\n')
+                i += 2
+                continue
+            if nxt == '\\':
+                out.append('\\')
+                i += 2
+                continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
 def _parse_ts(ts_str: str) -> datetime:
     """Parse ISO 8601 compact UTC timestamp."""
     s = ts_str.rstrip('Z')
@@ -150,6 +178,7 @@ def _parse_mnemonic(
     tags: list[str] = []
     rule = None
     why = who = when = desc = where = dl = inc = cost = source = None
+    body = project = None
     supersedes: list[str] = []
     related: list[str] = []
 
@@ -178,7 +207,7 @@ def _parse_mnemonic(
         elif ':' in line:
             k, v = line.split(':', 1)
             k = k.strip().upper()
-            v = v.strip()
+            v = _unesc(v.strip())
             if k == 'RULE':
                 rule = v
             elif k == 'WHY':
@@ -187,6 +216,10 @@ def _parse_mnemonic(
                 when = v
             elif k == 'DESC':
                 desc = v
+            elif k == 'BODY':
+                body = v
+            elif k == 'PROJ':
+                project = v
             elif k == 'WHO':
                 who = v
             elif k == 'WHERE':
@@ -208,6 +241,8 @@ def _parse_mnemonic(
         why=why,
         when=when,
         desc=desc,
+        body=body,
+        project=project,
         who=who,
         where=where,
         dl=dl,
@@ -232,6 +267,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
     if canonical:
         # Deterministic field order for SHA: alphabetical by sigil
         fields: list[tuple[str, str]] = []
+        if m.body:
+            fields.append(('BODY', m.body))
         if m.cost:
             fields.append(('COST', m.cost))
         if m.desc:
@@ -240,6 +277,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             fields.append(('DL', m.dl))
         if m.inc:
             fields.append(('INC', m.inc))
+        if m.project:
+            fields.append(('PROJ', m.project))
         fields.append(('RULE', m.rule))
         if m.tags:
             fields.append(('TAGS', ' '.join(sorted(m.tags))))
@@ -262,35 +301,39 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             if k == 'TAGS':
                 lines.append(f'#{v}')
             elif k.startswith('~'):
-                lines.append(f'{k}:{v}')
+                lines.append(f'{k}:{_esc(v)}')
             else:
-                lines.append(f'{k}:{v}')
+                lines.append(f'{k}:{_esc(v)}')
     else:
         if m.tags:
             lines.append('#' + ' #'.join(m.tags))
-        lines.append(f'RULE:{m.rule}')
+        if m.project:
+            lines.append(f'PROJ:{_esc(m.project)}')
+        lines.append(f'RULE:{_esc(m.rule)}')
         if m.why:
-            lines.append(f'WHY:{m.why}')
+            lines.append(f'WHY:{_esc(m.why)}')
         if m.when:
-            lines.append(f'WHEN:{m.when}')
+            lines.append(f'WHEN:{_esc(m.when)}')
         if m.desc:
-            lines.append(f'DESC:{m.desc}')
+            lines.append(f'DESC:{_esc(m.desc)}')
+        if m.body:
+            lines.append(f'BODY:{_esc(m.body)}')
         if m.who:
-            lines.append(f'WHO:{m.who}')
+            lines.append(f'WHO:{_esc(m.who)}')
         if m.where:
-            lines.append(f'WHERE:{m.where}')
+            lines.append(f'WHERE:{_esc(m.where)}')
         if m.dl:
-            lines.append(f'DL:{m.dl}')
+            lines.append(f'DL:{_esc(m.dl)}')
         if m.inc:
-            lines.append(f'INC:{m.inc}')
+            lines.append(f'INC:{_esc(m.inc)}')
         if m.cost:
-            lines.append(f'COST:{m.cost}')
+            lines.append(f'COST:{_esc(m.cost)}')
         if m.supersedes:
             lines.append(f'~SUP:{",".join(m.supersedes)}')
         if m.related:
             lines.append(f'~REL:{",".join(m.related)}')
         if m.source:
-            lines.append(f'~SRC:{m.source}')
+            lines.append(f'~SRC:{_esc(m.source)}')
 
     return '\n'.join(lines)
 
@@ -338,7 +381,7 @@ def mnemonic_to_markdown(m: Mnemonic) -> str:
         'rf': 'reference', 'cn': 'convention', 'lx': 'lesson',
     }
     type_str = type_map.get(m.type_code, 'feedback')
-    desc = m.rule[:120]
+    desc = m.desc or m.rule[:120]
 
     lines = [
         '---',
@@ -348,11 +391,12 @@ def mnemonic_to_markdown(m: Mnemonic) -> str:
         f'  type: {type_str}',
         '---',
         '',
-        m.rule,
+        m.body if m.body else m.rule,
         '',
     ]
-    if m.why:
-        lines += [f'**Why:** {m.why}', '']
-    if m.when:
-        lines += [f'**How to apply:** {m.when}', '']
+    if not m.body:
+        if m.why:
+            lines += [f'**Why:** {m.why}', '']
+        if m.when:
+            lines += [f'**How to apply:** {m.when}', '']
     return '\n'.join(lines)
