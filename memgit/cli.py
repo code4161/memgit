@@ -369,18 +369,12 @@ ONBOARD_BRIEF = """\
 This project has {count} memories in memgit{count_note}. A memory store that
 starts empty mid-project is useless until it is seeded — do that now, once,
 and every future session (in any AI tool) starts oriented.
-
+{digest_section}
 ## Instructions for the AI operator
 
 Extract 10–20 DURABLE facts about this project and save each one as a memory
 (via the memgit MCP `save_memory` tool, or `memgit add` in a shell).
-Read, in this order, whatever exists:
-
-1. README / CLAUDE.md / CONTRIBUTING / docs/ — purpose, architecture, setup
-2. Package manifests (package.json, pyproject.toml, go.mod, …) — stack, entry points, scripts
-3. `git log --oneline -30` and recent PRs — what is being worked on RIGHT NOW
-4. Config/env samples, CI files — deploy targets, environments, gates
-5. The code layout itself — modules, boundaries, naming conventions
+{reading_plan}
 
 ## What to save (one memory each, not a dump)
 
@@ -403,28 +397,71 @@ Checkpoint the seed set so it is versioned from day one:
 Then verify: `memgit search "<something about this project>"` should hit.
 """
 
+_READING_PLAN_WITH_DIGEST = """\
+The repo digest above was extracted deterministically from git and the
+filesystem — treat it as ground truth and do NOT re-derive it. On a large
+repo, do NOT crawl the tree. Work only from:
+
+1. The "Read these first" files listed in the digest — purpose, architecture, setup
+2. The manifests listed — stack, entry points, scripts, dependencies
+3. The recent commit subjects + hot areas — what is being worked on RIGHT NOW
+   (turn these into the "current state / active work" memory)
+4. Config/env samples and CI files if present — deploy targets, environments, gates"""
+
+_READING_PLAN_GENERIC = """\
+Read, in this order, whatever exists:
+
+1. README / CLAUDE.md / CONTRIBUTING / docs/ — purpose, architecture, setup
+2. Package manifests (package.json, pyproject.toml, go.mod, …) — stack, entry points, scripts
+3. `git log --oneline -30` and recent PRs — what is being worked on RIGHT NOW
+4. Config/env samples, CI files — deploy targets, environments, gates
+5. The code layout itself — modules, boundaries, naming conventions"""
+
 
 @cli.command()
 @click.option('--project', '-P', default=None,
               help='Project label (default: derived from the current directory)')
 @click.option('--path', 'proj_path', default='.', type=click.Path(exists=True),
               help='Project directory to onboard (default: cwd)')
-def onboard(project, proj_path):
+@click.option('--json', 'fmt_json', is_flag=True, help='Emit the raw repo digest as JSON')
+def onboard(project, proj_path, fmt_json):
     """Print the bootstrap brief for adopting memgit on an existing project.
 
     memgit only knows what has been saved — a project adopted midway starts
-    with zero context. This prints a step-by-step brief for an AI agent (or
-    you) to seed the store from the codebase: README, docs, git history,
-    conventions. Paste it into your AI session, or run
+    with zero context. This mines the repo's git history and filesystem
+    (bounded and read-only, fast even on huge repos) into a factual digest,
+    then prints a step-by-step brief for an AI agent (or you) to seed the
+    store from it. Paste it into your AI session, or run
     `memgit onboard | pbcopy`.
     """
+    from .gitdigest import build_digest, format_digest
     from .importer import project_label_from_path
 
     repo = _require_repo()
-    label = project or project_label_from_path(Path(proj_path)) or Path(proj_path).resolve().name
+    target = Path(proj_path)
+    label = project or project_label_from_path(target) or target.resolve().name
+
+    digest = build_digest(target)
+    if fmt_json:
+        import json as _j
+        digest['project'] = label
+        print(_j.dumps(digest, indent=2))
+        return
+
     count = sum(1 for m in repo.list() if m.project == label)
     count_note = '' if count else ' — it is a blank slate for this project'
-    print(ONBOARD_BRIEF.format(project=label, count=count, count_note=count_note))
+
+    rendered = format_digest(digest)
+    if rendered:
+        digest_section = ('\n## Repo digest (auto-extracted — trust it, don\'t re-derive)\n\n'
+                          f'{rendered}\n')
+        reading_plan = _READING_PLAN_WITH_DIGEST
+    else:
+        digest_section = ''
+        reading_plan = _READING_PLAN_GENERIC
+
+    print(ONBOARD_BRIEF.format(project=label, count=count, count_note=count_note,
+                               digest_section=digest_section, reading_plan=reading_plan))
 
 
 # ── log ───────────────────────────────────────────────────────────────────────

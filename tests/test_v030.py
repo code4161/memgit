@@ -281,6 +281,85 @@ class TestCli:
         assert msg == "sync: +1 (brand-new)"
 
 
+# ── git digest (onboarding intelligence) ────────────────────────────────────
+
+def _make_git_repo(root: Path):
+    import subprocess
+    def g(*args):
+        subprocess.run(["git"] + list(args), cwd=root, capture_output=True,
+                       env={"GIT_AUTHOR_NAME": "Tester", "GIT_AUTHOR_EMAIL": "t@t",
+                            "GIT_COMMITTER_NAME": "Tester", "GIT_COMMITTER_EMAIL": "t@t",
+                            "PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")})
+    g("init", "-q", "-b", "main")
+    (root / "README.md").write_text("# proj")
+    (root / "pyproject.toml").write_text("[project]\nname='x'")
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text("print(1)")
+    g("add", "-A")
+    g("commit", "-qm", "initial scaffold")
+    (root / "src" / "app.py").write_text("print(2)")
+    g("add", "-A")
+    g("commit", "-qm", "fix: app output")
+
+
+class TestGitDigest:
+    def test_digest_extracts_facts(self, tmp_path):
+        from memgit.gitdigest import build_digest
+        _make_git_repo(tmp_path)
+        d = build_digest(tmp_path)
+        assert d["has_git"] is True
+        assert d["branch"] == "main"
+        assert d["commit_count"] == 2
+        assert "fix: app output" in d["recent_subjects"]
+        assert "README.md" in d["docs"]
+        assert "Python" in d["stacks"]
+        assert "src" in d["hot_dirs"]
+
+    def test_digest_without_git(self, tmp_path):
+        from memgit.gitdigest import build_digest
+        (tmp_path / "README.md").write_text("# hi")
+        d = build_digest(tmp_path)
+        assert d["has_git"] is False
+        assert d["docs"] == ["README.md"]
+
+    def test_format_digest_renders(self, tmp_path):
+        from memgit.gitdigest import build_digest, format_digest
+        _make_git_repo(tmp_path)
+        out = format_digest(build_digest(tmp_path))
+        assert "Read these first: README.md" in out
+        assert "Stack: Python" in out
+        assert "fix: app output" in out
+
+    def test_onboard_embeds_digest(self, tmp_path, monkeypatch):
+        _make_git_repo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        Repository.init(tmp_path)
+        r = CliRunner()
+        res = r.invoke(cli, ["onboard", "--project", "MyProj"])
+        assert res.exit_code == 0
+        assert "Repo digest" in res.output
+        assert "trust it, don't re-derive" in res.output
+        assert "do NOT crawl the tree" in res.output
+
+    def test_onboard_json_digest(self, tmp_path, monkeypatch):
+        import json
+        _make_git_repo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        Repository.init(tmp_path)
+        r = CliRunner()
+        res = r.invoke(cli, ["onboard", "--project", "MyProj", "--json"])
+        d = json.loads(res.output)
+        assert d["project"] == "MyProj" and d["has_git"] is True
+
+    def test_onboard_no_git_falls_back_generic(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        Repository.init(tmp_path)
+        r = CliRunner()
+        res = r.invoke(cli, ["onboard", "--project", "MyProj"])
+        assert res.exit_code == 0
+        assert "git log --oneline -30" in res.output  # generic reading plan
+
+
 # ── MCP project detection ────────────────────────────────────────────────────
 
 class TestMcpDetect:

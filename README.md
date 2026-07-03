@@ -159,10 +159,10 @@ Memory tools have a cold-start problem: install one halfway through a project an
 
 ```bash
 cd your-project
-memgit onboard          # prints the bootstrap brief
+memgit onboard          # mines the repo, prints the bootstrap brief
 ```
 
-The brief tells your AI agent exactly what to do: read the README/docs/manifests and recent git history, extract 10–20 durable facts (purpose, architecture, conventions, current state, gotchas), save each as a typed memory, and checkpoint the seed set. Paste it into a session — or don't: if the AI searches memory in a project that has none, the MCP server itself replies with the bootstrap instructions instead of a bare "no results."
+`onboard` first extracts a **repo digest** deterministically — git history (recent commit subjects, hot files/directories by churn, authors, branch, tags), detected stack from manifests, and the docs worth reading — using bounded, read-only probes that stay near-instant even on huge repositories. The brief then tells your AI agent exactly what to do with it: read only the listed files (no tree crawling), extract 10–20 durable facts (purpose, architecture, conventions, current state, gotchas), save each as a typed memory, and checkpoint the seed set. Paste it into a session — or don't: if the AI searches memory in a project that has none, the MCP server itself replies with the bootstrap instructions instead of a bare "no results."
 
 Memories are **project-scoped**: each carries the workspace it belongs to, searches boost the project you're standing in (global rules still surface), and the resume digest leads with *your current project's* recent work — not whatever repo you touched last night.
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.1] — 2026-07-03
+
+### Added
+- **Git-aware onboarding** — `memgit onboard` now mines the repo itself before printing the brief: a deterministic, read-only, bounded digest (git branch/commit count/latest tag, recent commit subjects, hot files and directories by churn, recent authors, detected stack from manifests, docs to read first, CI presence). Every probe is timeout-guarded and commit-capped, so it is near-instant even on very large repositories (measured 0.19 s). The brief tells the AI operator to trust the digest and NOT crawl the tree — extraction the tool can do deterministically is no longer left to the model, which is exactly where errors and wasted tokens came from. `--json` emits the raw digest for tooling. Falls back to the generic reading plan when there is no git repo.
+
 ## [0.3.0] — 2026-07-03
 
 Lossless memories, project scoping, and mid-project onboarding — fixes from the first real multi-project dogfooding audit, where a 17,500-char project memory was found stored as a 360-char first paragraph and 8 projects' memories were flattened into one undifferentiated pile.

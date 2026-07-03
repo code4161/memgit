@@ -403,7 +403,9 @@ def run_server(store_path: Path | None = None) -> None:
                         "docs and `git log --oneline -30`, extract 10-20 durable facts "
                         "(purpose, architecture, conventions, current state, gotchas), and "
                         "save_memory each with a one-line rule + full body. "
-                        "`memgit onboard` prints the complete brief."
+                        "Run `memgit onboard` first — it mines the repo's git history and "
+                        "manifests into a factual digest plus the complete seeding brief, "
+                        "so you read only what matters instead of crawling the tree."
                     )
                 return [TextContent(type="text", text=text)]
 
