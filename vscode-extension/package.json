@@ -2,7 +2,7 @@
   "name": "memgit",
   "displayName": "Memgit Tool",
   "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",
