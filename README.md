@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen)](tests/)
 
 ---
 
@@ -381,7 +381,7 @@ git clone https://github.com/code4161/memgit.git
 cd memgit
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest    # 48 tests, all passing, < 1 second
+pytest    # 160 tests, all passing, < 3 seconds
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -401,6 +401,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Flat `memories/` directory — grep/diff/blame your memories
 - [x] D3.js graph visualization of memory relationships
 - [x] `memgit resume` + SessionStart hook — sessions start with "where we left off"
+- [x] Guardrail hooks — per-prompt auto-recall + end-of-session capture guard (v0.4.0)
 - [x] `memgit gc` — space reclamation (mark-and-sweep, lossless squash archive)
 - [x] Multi-agent write safety — store lock, auto-merge commits, `memgit merge`
 - [x] PyPI + Homebrew (tap) + npm published (v0.1.5)
