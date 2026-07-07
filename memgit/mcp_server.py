@@ -307,6 +307,14 @@ def run_server(store_path: Path | None = None) -> None:
                             "description": _TYPE_DESCRIPTIONS,
                             "default": "fb",
                         },
+                        "type": {
+                            "type": "string",
+                            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                            "description": (
+                                "Alias for type_code (read tools return this "
+                                "field as 'type', so both spellings work here)."
+                            ),
+                        },
                         "why": {
                             "type": "string",
                             "description": "Why this rule exists — the incident, reason, or motivation. Optional but strongly recommended.",
@@ -391,10 +399,13 @@ def run_server(store_path: Path | None = None) -> None:
                                  boost_project=current_project)
 
             if not results:
+                from .project import same_project_family
                 text = "No results found."
-                # Fresh-adoption nudge: this project has nothing saved at all.
+                # Fresh-adoption nudge: this project has nothing saved at all
+                # (nothing in its project tree — subdirs and parents count).
                 if current_project and not any(
-                    m.project == current_project for m in mnemonics
+                    same_project_family(m.project, current_project)
+                    for m in mnemonics
                 ):
                     text += (
                         f"\n\nNOTE: project '{current_project}' has NO memories yet — "
@@ -465,7 +476,10 @@ def run_server(store_path: Path | None = None) -> None:
             if not slug or not rule:
                 return [TextContent(type="text", text="Error: slug and rule are required.")]
 
-            type_code = arguments.get("type_code", "fb")
+            # Accept "type" as an alias: read surfaces return the field as
+            # "type", so an operator mirroring get_memory output naturally
+            # passes it back under that name.
+            type_code = arguments.get("type_code") or arguments.get("type") or "fb"
             why = arguments.get("why")
             when = arguments.get("when")
             body = arguments.get("body")
@@ -495,6 +509,15 @@ def run_server(store_path: Path | None = None) -> None:
             )
 
             repo.add(m)
+            # Checkpoint immediately with real provenance. Relying on a
+            # later session-end sync leaves saves staged indefinitely on
+            # machines with no markdown memories, and buries them in
+            # `sync:` messages when it does run. One save = one checkpoint,
+            # rollback-able and attributable in the log.
+            ck_sha = repo.commit(
+                message=f"save: {slug} [{type_code}]",
+                trigger="mcp_save",
+            )
 
             action = "updated" if existing else "saved"
             return [TextContent(
@@ -506,6 +529,7 @@ def run_server(store_path: Path | None = None) -> None:
                     "type": type_code,
                     "priority": priority,
                     "project": project,
+                    "checkpoint": (ck_sha or "")[:8] or None,
                 }, indent=2),
             )]
 
@@ -536,7 +560,9 @@ def run_server(store_path: Path | None = None) -> None:
             return [TextContent(type="text", text="\n".join(lines))]
 
         else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            # Raising lets the MCP layer mark the result isError=true —
+            # returning text would read as success to a compliant client.
+            raise ValueError(f"Unknown tool: {name}")
 
     # Run
     import asyncio

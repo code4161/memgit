@@ -178,13 +178,22 @@ memgit resume --plain    # plain text, for piping into an AI context
 memgit resume --json     # for tooling
 ```
 
-Wire it into Claude Code so every new session **starts** with this digest in context — no tool call, no judgment required:
+Wire it into Claude Code so memory becomes **automatic** — no tool call, no judgment required:
 
 ```bash
-memgit setup hooks       # installs a SessionStart hook (~/.claude/settings.json)
+memgit setup hooks       # installs all four hooks (~/.claude/settings.json)
 ```
 
-The digest is deliberately bounded (~350 tokens measured on a 500-memory store): rules are clipped, the critical list is capped, and full text is one `get_memory` call away.
+| Hook | What it enforces |
+|---|---|
+| `SessionStart` | every session opens with the resume digest in context |
+| `UserPromptSubmit` | each prompt is BM25-matched against the store; relevant memories are injected (silent when nothing clears the relevance bar; never repeats within a session) — `--no-recall` to skip |
+| `Stop` (guard) | a session that did real work but saved nothing gets ONE nudge to save durable facts before finishing — `--no-guard` to skip |
+| `Stop` (sync) | markdown memories are checkpointed asynchronously at session end |
+
+Why hooks and not just good tool descriptions? We measured it: across 166 real sessions, hook-injected context was delivered in **100%** of them while voluntary memory-tool calls happened in **6%**. What a hook enforces happens.
+
+The resume digest is deliberately bounded (~350 tokens measured on a 500-memory store): rules are clipped, the critical list is capped, and full text is one `get_memory` call away.
 
 ---
 
@@ -288,7 +297,8 @@ memgit setup windsurf
 memgit setup cline
 memgit setup continue
 memgit setup gemini-cli
-memgit setup hooks                # Claude Code SessionStart hook → auto-inject resume digest
+memgit setup hooks                # Claude Code hooks: resume at start, per-prompt recall,
+                                  # capture guard + auto-sync at stop (--no-recall / --no-guard)
 
 # Server
 memgit serve                      # MCP stdio (Claude Code, Cursor, Windsurf, Cline)

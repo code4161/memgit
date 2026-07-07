@@ -215,7 +215,9 @@ class Repository:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            parts = line.split()
+            # rsplit tolerates legacy slugs containing spaces instead of
+            # silently dropping the entry (the SHA is always the last field).
+            parts = line.rsplit(None, 1)
             if len(parts) == 2:
                 result[parts[0]] = parts[1]
         return result
@@ -267,7 +269,20 @@ class Repository:
     # ── Mnemonic operations ───────────────────────────────────────────────────
 
     def add(self, m: Mnemonic) -> str:
-        """Write a mnemonic and stage it in the index. Returns SHA."""
+        """Write a mnemonic and stage it in the index. Returns SHA.
+
+        The slug is normalized to index-safe characters: the index format is
+        space-delimited, so a slug containing whitespace would be unparseable
+        on read-back and the memory would silently vanish.
+        """
+        import re as _re
+        safe = _re.sub(r'[^A-Za-z0-9_-]+', '-', m.slug).strip('-')
+        if not safe:
+            raise ValueError(f'invalid slug: {m.slug!r}')
+        m.slug = safe
+        if not (m.rule or '').strip():
+            raise ValueError(f'empty rule for {m.slug!r} — a memory with no '
+                             'fact is unrecallable')
         with self._lock():
             sha = self.store.write_mnemonic(m)
             index = self.get_index()
@@ -838,29 +853,49 @@ class Repository:
         }
 
         # Recently updated memories (by mnemonic timestamp) + critical set
+        from .project import project_affinity
         mnemonics = self.list()
         by_recency = sorted(mnemonics, key=lambda m: m.timestamp, reverse=True)
-        pool = by_recency
         if project:
-            in_project = [m for m in by_recency if m.project == project]
-            if in_project:
-                # project memories first, then global fill up to the cap
-                rest = [m for m in by_recency if m.project != project]
-                pool = in_project + rest
+            # Exact workspace first, then the same project tree (a session in
+            # BITS/bits_back still counts BITS memories as its own), then
+            # global (unscoped) memories. Other projects' scoped memories are
+            # NEVER pulled in as filler — a new client project's first
+            # session must not open with another client's content.
+            exact = [m for m in by_recency
+                     if project_affinity(m.project, project) == 2]
+            family = [m for m in by_recency
+                      if project_affinity(m.project, project) == 1]
+            unscoped = [m for m in by_recency if not m.project]
+            pool = exact + family + unscoped
+            project_is_new = not (exact or family)
+        else:
+            pool = by_recency
+            project_is_new = False
         recent_mems = [
             {'slug': m.slug, 'type': m.type_code, 'priority': m.priority,
              'timestamp': m.timestamp, 'rule': m.rule, 'project': m.project}
             for m in pool[:recent]
         ]
+        critical_pool = mnemonics
+        if project:
+            # Critical rules follow the same scoping: this project's tree
+            # plus global rules — not every project's always-apply set.
+            critical_pool = [
+                m for m in mnemonics
+                if not m.project or project_affinity(m.project, project) >= 1
+            ]
         critical = [
             {'slug': m.slug, 'rule': m.rule}
-            for m in sorted(mnemonics, key=lambda m: m.slug) if m.priority == 3
+            for m in sorted(critical_pool, key=lambda m: m.slug)
+            if m.priority == 3
         ]
 
         count, first_ts = self.chain_info(thread)
         return {
             'thread': thread,
             'project': project,
+            'project_is_new': project_is_new,
             'head': (head or '')[:8],
             'checkpoint_count': count,
             'history_since': first_ts,

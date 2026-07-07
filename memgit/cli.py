@@ -29,11 +29,10 @@ def _require_repo() -> Repository:
 
 # ── Root group ────────────────────────────────────────────────────────────────
 
-try:
-    from importlib.metadata import version as _pkg_version
-    _version = _pkg_version('memgit')
-except Exception:
-    _version = '0.1.2'
+# Source of truth is the code, not dist metadata: editable installs keep
+# whatever metadata version existed at `pip install -e` time (observed: a
+# 0.3.1 checkout reporting 0.1.0 via importlib.metadata).
+from . import __version__ as _version
 
 
 @click.group()
@@ -127,7 +126,8 @@ def init(directory):
 @click.option('--body', '-b', default=None,
               help='Full long-form detail (multi-line ok, or "-" to read stdin)')
 @click.option('--project', '-P', default=None,
-              help='Project this memory belongs to (see `memgit list`)')
+              help='Project this memory belongs to (default: derived from the '
+                   'current directory; pass "" for a global memory)')
 def add(slug, rule, type_code, why, when, tags, priority, body, project):
     """Add or update a mnemonic.
 
@@ -138,6 +138,13 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project):
     tag_list = [t.strip() for t in tags.split(',')] if tags else []
     if body == '-':
         body = sys.stdin.read().strip() or None
+    # Same scoping semantics as MCP save_memory: absent → this workspace,
+    # explicit empty → deliberately global.
+    if project is None:
+        from .project import project_label_from_path
+        project = project_label_from_path(Path.cwd())
+    elif not project.strip():
+        project = None
 
     m = Mnemonic(
         type_code=type_code,
@@ -152,7 +159,8 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project):
         project=project,
     )
     sha = repo.add(m)
-    console.print(f'[green]staged[/green]  {slug} [{sha[:8]}]')
+    from rich.markup import escape as _mesc
+    console.print(f'[green]staged[/green]  {_mesc(m.slug)} {_mesc("[" + sha[:8] + "]")}')
 
 
 # ── remove ────────────────────────────────────────────────────────────────────
@@ -355,10 +363,40 @@ def _format_resume_plain(ctx: dict) -> str:
     if ctx.get('maintenance'):
         lines.append('')
         lines.append(f'## Maintenance needed\n- {ctx["maintenance"]}')
+    if ctx.get('project_is_new'):
+        lines.append('')
+        lines.append(
+            f'## This project has no memories yet ({ctx["project"]})\n'
+            '- memgit was adopted mid-project: nothing above is specific to this '
+            'workspace. Bootstrap it once — run `memgit onboard` for a repo '
+            'digest + seeding brief, then save 10-20 durable facts '
+            '(purpose, architecture, conventions, state, gotchas) via save_memory.'
+        )
     lines.append('')
     lines.append('(Check work-in-flight and the last checkpoints before assuming state; '
                  'use memgit search for anything task-specific.)')
     return '\n'.join(lines)
+
+
+# ── hook handlers (invoked by AI-tool hosts, not humans) ─────────────────────
+
+@cli.group(name='hook')
+def hook():
+    """Hook handlers for AI-tool hosts (installed by `memgit setup hooks`)."""
+
+
+@hook.command('prompt-recall')
+def hook_prompt_recall():
+    """UserPromptSubmit: inject memories relevant to the prompt (stdin JSON)."""
+    from .hooks import prompt_recall
+    sys.exit(prompt_recall())
+
+
+@hook.command('stop-guard')
+def hook_stop_guard():
+    """Stop: nudge once if a substantive session saved nothing (stdin JSON)."""
+    from .hooks import stop_guard
+    sys.exit(stop_guard())
 
 
 # ── onboard ───────────────────────────────────────────────────────────────────
@@ -602,35 +640,40 @@ def show(slug, toon, fmt_markdown):
     elif toon:
         print(serialize_mnemonic(m))
     else:
+        # User content and shas go through markup escaping — `[pj]`,
+        # `[[wikilinks]]`, or a sha like [fadc1234] would otherwise be
+        # eaten as rich tags and silently altered on screen.
+        from rich.markup import escape as _mesc
         sha_s = m.sha[:8] if m.sha else '?'
         p_label = {1: 'low', 2: 'medium', 3: '[bold red]CRITICAL[/bold red]'}[m.priority]
-        proj = f'  project={m.project}' if m.project else ''
-        console.print(f'[bold cyan]{m.slug}[/bold cyan]  [{m.type_code}]  priority={p_label}{proj}  sha={sha_s}')
+        proj = f'  project={_mesc(m.project)}' if m.project else ''
+        console.print(f'[bold cyan]{_mesc(m.slug)}[/bold cyan]  {_mesc("[" + m.type_code + "]")}  '
+                      f'priority={p_label}{proj}  sha={_mesc(sha_s)}')
         console.print(f'')
-        console.print(f'[bold]RULE[/bold] {m.rule}')
+        console.print(f'[bold]RULE[/bold] {_mesc(m.rule)}')
         if m.why:
-            console.print(f'[bold]WHY[/bold]  {m.why}')
+            console.print(f'[bold]WHY[/bold]  {_mesc(m.why)}')
         if m.when:
-            console.print(f'[bold]WHEN[/bold] {m.when}')
+            console.print(f'[bold]WHEN[/bold] {_mesc(m.when)}')
         if m.desc:
-            console.print(f'[bold]DESC[/bold] {m.desc}')
+            console.print(f'[bold]DESC[/bold] {_mesc(m.desc)}')
         if m.body:
             console.print(f'\n[bold]BODY[/bold]')
-            console.print(m.body)
+            console.print(m.body, markup=False)
         if m.who:
-            console.print(f'[bold]WHO[/bold]  {m.who}')
+            console.print(f'[bold]WHO[/bold]  {_mesc(m.who)}')
         if m.where:
-            console.print(f'[bold]WHERE[/bold] {m.where}')
+            console.print(f'[bold]WHERE[/bold] {_mesc(m.where)}')
         if m.inc:
-            console.print(f'[bold]INC[/bold]  {m.inc}')
+            console.print(f'[bold]INC[/bold]  {_mesc(m.inc)}')
         if m.cost:
-            console.print(f'[bold]COST[/bold] {m.cost}')
+            console.print(f'[bold]COST[/bold] {_mesc(m.cost)}')
         if m.tags:
-            console.print(f'[dim]Tags: {", ".join(m.tags)}[/dim]')
+            console.print(f'[dim]Tags: {_mesc(", ".join(m.tags))}[/dim]')
         if m.related:
-            console.print(f'[dim]Related: {", ".join(m.related)}[/dim]')
+            console.print(f'[dim]Related: {_mesc(", ".join(m.related))}[/dim]')
         if m.supersedes:
-            console.print(f'[dim]Supersedes: {", ".join(m.supersedes)}[/dim]')
+            console.print(f'[dim]Supersedes: {_mesc(", ".join(m.supersedes))}[/dim]')
 
 
 # ── list ──────────────────────────────────────────────────────────────────────
@@ -864,6 +907,7 @@ def lint():
         console.print(f'[green]OK[/green] — {len(mnemonics)} mnemonics, no issues')
     else:
         console.print(f'[yellow]{issues} issue{"s" if issues != 1 else ""}[/yellow]')
+        sys.exit(1)  # let scripts/CI gate on lint
 
 
 import re  # noqa: E402 — needed for lint command
@@ -1002,6 +1046,15 @@ def sync(message, dry_run):
     mnemonics = from_claude_code()
 
     if not mnemonics:
+        # No markdown sources on this machine — but anything already staged
+        # (MCP saves, CLI adds) must still be checkpointed, or it lingers
+        # uncommitted forever on stores fed purely through MCP.
+        if not dry_run:
+            msg = message or _staged_diff_message(repo)
+            sha = repo.commit(message=msg, trigger='session_end') if msg else None
+            if sha:
+                console.print(f'[green]sync[/green]  {sha[:8]}  {msg}')
+                return
         console.print('[dim]No Claude Code memories found.[/dim]')
         return
 
@@ -1926,15 +1979,41 @@ def setup_gemini_cli(dry_run):
     _run_target('Gemini CLI', path, _patch_mcp_servers, dry_run)
 
 
-@setup.command('hooks')
-@click.option('--remove', is_flag=True, help='Uninstall the memgit SessionStart hook')
-@click.option('--dry-run', is_flag=True, help='Show the change without writing')
-def setup_hooks(remove, dry_run):
-    """Install a Claude Code SessionStart hook that injects `memgit resume`.
+#: substrings identifying a hook command as one of ours (any generation)
+_MEMGIT_HOOK_SIGNS = ('resume --plain', 'hook prompt-recall', 'hook stop-guard', ' sync')
 
-    After this, every new Claude Code session (including /clear and resume)
-    automatically starts with your last checkpoints, work in flight, and
-    critical rules in context — the model doesn't have to remember to look.
+
+def _is_memgit_hook_entry(h: dict) -> bool:
+    return any(
+        'memgit' in inner.get('command', '') and
+        any(sign in inner.get('command', '') for sign in _MEMGIT_HOOK_SIGNS)
+        for inner in h.get('hooks', []) if isinstance(inner, dict)
+    )
+
+
+@setup.command('hooks')
+@click.option('--remove', is_flag=True, help='Uninstall all memgit hooks')
+@click.option('--no-recall', is_flag=True,
+              help='Skip the per-prompt auto-recall hook (UserPromptSubmit)')
+@click.option('--no-guard', is_flag=True,
+              help='Skip the end-of-session capture guard (Stop)')
+@click.option('--dry-run', is_flag=True, help='Show the change without writing')
+def setup_hooks(remove, no_recall, no_guard, dry_run):
+    """Install the Claude Code hooks that make memory automatic.
+
+    Four hooks, one principle: what a hook enforces happens, what a tool
+    description suggests mostly doesn't (measured: 6% voluntary engagement
+    vs 100% hook delivery).
+
+    \b
+      SessionStart      inject `memgit resume` — last checkpoints, work in
+                        flight, critical rules
+      UserPromptSubmit  inject memories relevant to each prompt (BM25,
+                        silent when nothing clears the relevance bar)
+      Stop              capture guard — a substantive session ending with
+                        zero memory writes gets ONE nudge to save durable
+                        facts; plus async `memgit sync` to checkpoint
+                        markdown memories
 
     Hooks live in ~/.claude/settings.json (unlike MCP servers, which live
     in ~/.claude.json).
@@ -1942,8 +2021,10 @@ def setup_hooks(remove, dry_run):
     import shlex
     settings_path = Path.home() / '.claude' / 'settings.json'
     base = ' '.join(shlex.quote(p) for p in _memgit_base_cmd())
-    # `|| true`: a broken store must never block session start
-    hook_command = f'{base} resume --plain 2>/dev/null || true'
+
+    from .repo import default_store_candidates
+    store = next((c for c in default_store_candidates() if (c / '.memgit').is_dir()),
+                 Path.home() / '.claude' / 'memgit-store')
 
     if settings_path.exists():
         try:
@@ -1955,43 +2036,55 @@ def setup_hooks(remove, dry_run):
         data = {}
 
     hooks = data.setdefault('hooks', {})
-    session_start = hooks.setdefault('SessionStart', [])
 
-    def _is_memgit_hook(h: dict) -> bool:
-        return any('memgit resume' in inner.get('command', '')
-                   for inner in h.get('hooks', []) if isinstance(inner, dict))
+    # `|| true` + stderr silenced everywhere: a broken store must never
+    # block the user's session.
+    plan: dict[str, list[dict]] = {
+        'SessionStart': [
+            {'type': 'command',
+             'command': f'{base} resume --plain 2>/dev/null || true'},
+        ],
+        'UserPromptSubmit': [] if no_recall else [
+            {'type': 'command',
+             'command': f'{base} hook prompt-recall 2>/dev/null || true'},
+        ],
+        'Stop': ([] if no_guard else [
+            {'type': 'command',
+             'command': f'{base} hook stop-guard 2>/dev/null || true'},
+        ]) + [
+            {'type': 'command',
+             'command': f'cd {shlex.quote(str(store))} && {base} sync 2>/dev/null || true',
+             'async': True},
+        ],
+    }
 
-    existing = [h for h in session_start if isinstance(h, dict) and _is_memgit_hook(h)]
-
-    if remove:
-        if not existing:
-            console.print('[dim]No memgit SessionStart hook installed.[/dim]')
-            return
-        session_start[:] = [h for h in session_start if h not in existing]
-        if not session_start:
-            hooks.pop('SessionStart', None)
-        if not hooks:
-            data.pop('hooks', None)
-        if not dry_run:
-            _write_json_safe(settings_path, data)
-        console.print(f'[yellow]removed[/yellow] memgit SessionStart hook from {settings_path}'
-                      + (' [dim](dry run)[/dim]' if dry_run else ''))
-        return
-
-    entry = {'hooks': [{'type': 'command', 'command': hook_command}]}
-    if existing:
-        if existing[0] == entry and len(existing) == 1:
-            console.print(f'[green]✓[/green] already installed in {settings_path}')
-            return
-        session_start[:] = [h for h in session_start if h not in existing]
-    session_start.append(entry)
+    changed = []
+    for event in ('SessionStart', 'UserPromptSubmit', 'Stop'):
+        entries = hooks.setdefault(event, [])
+        had = [h for h in entries if isinstance(h, dict) and _is_memgit_hook_entry(h)]
+        entries[:] = [h for h in entries if h not in had]
+        if not remove and plan[event]:
+            entries.append({'hooks': plan[event]})
+            changed.append(event)
+        if not entries:
+            hooks.pop(event, None)
+    if not hooks:
+        data.pop('hooks', None)
 
     if not dry_run:
         _write_json_safe(settings_path, data)
-    console.print(f'[green]✓[/green] SessionStart hook installed in {settings_path}'
-                  + (' [dim](dry run)[/dim]' if dry_run else ''))
-    console.print(f'  [dim]{hook_command}[/dim]')
-    console.print('[dim]Every new Claude Code session now starts with your memgit resume digest.[/dim]')
+
+    suffix = ' [dim](dry run)[/dim]' if dry_run else ''
+    if remove:
+        console.print(f'[yellow]removed[/yellow] all memgit hooks from {settings_path}{suffix}')
+        return
+    console.print(f'[green]✓[/green] memgit hooks installed in {settings_path}{suffix}')
+    for event in changed:
+        for inner in plan[event]:
+            tag = ' [dim](async)[/dim]' if inner.get('async') else ''
+            console.print(f'  [cyan]{event}[/cyan]  [dim]{inner["command"]}[/dim]{tag}')
+    console.print('[dim]Resume at session start, relevant memories per prompt, '
+                  'capture guard + sync at stop.[/dim]')
 
 
 @setup.command('print-config')

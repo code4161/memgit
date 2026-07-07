@@ -18,8 +18,20 @@ USER_TYPE_CODES = {"fb", "us", "pj", "rf", "cn", "lx"}
 
 
 def _esc(value: str) -> str:
-    """Escape a field value for TOON's one-line-per-field layout."""
-    return value.replace('\\', '\\\\').replace('\n', '\\n')
+    """Escape a field value for TOON's one-line-per-field layout.
+
+    CR must be escaped like LF: parse-side normalization treats a raw CR
+    as a line break, which would truncate the field mid-value and re-parse
+    the tail as new fields — silent corruption plus field injection.
+    A leading space/tab gets a protective backslash so it survives the
+    lenient `KEY: value` (space-after-colon) parse of hand-written files.
+    """
+    out = (value.replace('\\', '\\\\')
+                .replace('\n', '\\n')
+                .replace('\r', '\\r'))
+    if out[:1] in (' ', '\t'):
+        out = '\\' + out
+    return out
 
 
 def _unesc(value: str) -> str:
@@ -34,6 +46,14 @@ def _unesc(value: str) -> str:
             nxt = value[i + 1]
             if nxt == 'n':
                 out.append('\n')
+                i += 2
+                continue
+            if nxt == 'r':
+                out.append('\r')
+                i += 2
+                continue
+            if nxt in (' ', '\t'):
+                out.append(nxt)
                 i += 2
                 continue
             if nxt == '\\':
@@ -182,8 +202,8 @@ def _parse_mnemonic(
     supersedes: list[str] = []
     related: list[str] = []
 
-    for line in lines:
-        line = line.strip()
+    for raw in lines:
+        line = raw.strip()
         if not line:
             continue
 
@@ -205,9 +225,16 @@ def _parse_mnemonic(
                 elif k == 'SRC':
                     source = v
         elif ':' in line:
-            k, v = line.split(':', 1)
+            # Split the RAW line: the serializer writes `KEY:value` with the
+            # value's bytes intact, so stripping here would eat leading
+            # indentation / trailing spaces that ARE the data. One leading
+            # space is dropped for lenient hand-written `KEY: value` files
+            # (_esc backslash-protects a data-bearing leading space).
+            k, v = raw.split(':', 1)
             k = k.strip().upper()
-            v = _unesc(v.strip())
+            if v.startswith(' '):
+                v = v[1:]
+            v = _unesc(v)
             if k == 'RULE':
                 rule = v
             elif k == 'WHY':

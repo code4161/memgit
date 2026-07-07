@@ -27,36 +27,10 @@ PRIORITY_MAP = {
 BODY_MAX_CHARS = 32_000
 
 
-def project_label_from_path(path: Path) -> Optional[str]:
-    """Derive a project label from a filesystem path, matching Claude Code's
-    project-directory munging (path separators/dots/spaces → '-').
-
-    /Users/hari/Freelance/BITS → 'Freelance-BITS' (home prefix stripped).
-    """
-    try:
-        resolved = path.expanduser().resolve()
-        home = Path.home().resolve()
-        if resolved == home:
-            return None
-        rel = resolved.relative_to(home)
-        parts = [re.sub(r'[/._ ]+', '-', p).strip('-') for p in rel.parts]
-        label = '-'.join(p for p in parts if p)
-        return label or None
-    except (ValueError, OSError):
-        return None
-
-
-def _project_label_from_munged(munged: str) -> Optional[str]:
-    """Derive a project label from a Claude Code projects/ dir name.
-
-    '-Users-hari-Freelance-BITS' → 'Freelance-BITS' (munged home stripped).
-    """
-    home_munged = re.sub(r'[/._ ]+', '-', str(Path.home()))
-    if munged.startswith(home_munged + '-'):
-        label = munged[len(home_munged) + 1:]
-    else:
-        label = munged.lstrip('-')
-    return label or None
+# Label derivation lives in memgit.project; re-exported here because callers
+# historically import it from the importer.
+from .project import project_label_from_path  # noqa: F401
+from .project import project_label_from_munged as _project_label_from_munged
 
 
 def from_claude_code(memory_dir: Path = None) -> list[Mnemonic]:
@@ -124,7 +98,13 @@ def _parse_md(path: Path, project: Optional[str] = None) -> Optional[Mnemonic]:
             k, v = stripped.split(':', 1)
             fm[k.strip()] = v.strip()
 
-    slug = fm.get('name', path.stem)
+    # Frontmatter names sometimes contain spaces/odd chars — slugify, or the
+    # entry is unparseable in the space-delimited index and silently vanishes.
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', fm.get('name', path.stem)).strip('-')
+    if not slug:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '-', path.stem).strip('-') or None
+    if not slug:
+        return None
     desc = fm.get('description', '')
     type_str = fm.get('type', 'feedback')
     type_code = TYPE_MAP.get(type_str, 'fb')

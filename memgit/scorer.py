@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .project import project_affinity
+
 if TYPE_CHECKING:
     from .models import Mnemonic
 
@@ -48,9 +50,12 @@ _FIELD_WEIGHT = {
     "body": 0.4,
 }
 
-# Score multiplier for memories belonging to the project being worked on.
+# Score multipliers for memories belonging to the project being worked on.
 # An affinity nudge, not a filter — global rules still surface everywhere.
-_PROJECT_BOOST = 1.25
+# Exact workspace match nudges hardest; same project tree (a session in
+# BITS/bits_back drawing on BITS memories, or vice versa) still nudges.
+_PROJECT_BOOST_EXACT = 1.25
+_PROJECT_BOOST_FAMILY = 1.15
 
 # BM25 parameters
 _K1 = 1.5
@@ -129,8 +134,12 @@ def score(
         score_val *= _PRIORITY_BOOST.get(m.priority, 1.0)
 
         # Project affinity boost
-        if boost_project and m.project == boost_project:
-            score_val *= _PROJECT_BOOST
+        if boost_project:
+            affinity = project_affinity(m.project, boost_project)
+            if affinity == 2:
+                score_val *= _PROJECT_BOOST_EXACT
+            elif affinity == 1:
+                score_val *= _PROJECT_BOOST_FAMILY
 
         if score_val > 0:
             results.append(ScoredMnemonic(m, round(score_val, 4), matched))

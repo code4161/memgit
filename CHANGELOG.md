@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0] — 2026-07-07
+
+Guardrail-grade memory. A transcript audit of 166 real Claude Code sessions showed the hard truth: context *injection* (hooks) delivered in 100% of sessions, while *voluntary* tool engagement happened in 6% — sessions found production root causes and client decisions and saved none of them. What a hook enforces happens; what a tool description suggests mostly doesn't. 0.4.0 makes recall and capture hook-enforced, and fixes every defect found in a full end-to-end audit (store forensics + 6-project usage scan + functional validation).
+
+### Added
+- **Per-prompt auto-recall** (`UserPromptSubmit` hook): every user prompt is BM25-matched against the store and the top relevant memories are injected as context — recall no longer depends on the model thinking to search. Silent unless a match clears a store-size-aware relevance bar (an absolute bar would mute recall on young stores, where BM25 IDF collapses); per-session dedup so the same memory is never injected twice.
+- **Capture guard** (`Stop` hook): a session that did substantial work (25+ tool calls) and saved nothing gets blocked ONCE with instructions to save durable facts — or finish if nothing qualifies. Never nags twice (session marker + `stop_hook_active` double-guard). Detection is anchored to real `tool_use` JSON shapes, so tool names appearing as plain text don't count as saves.
+- **`memgit setup hooks` now installs the full set**: SessionStart resume, UserPromptSubmit recall (`--no-recall` to skip), Stop capture-guard (`--no-guard` to skip) + async `memgit sync`. Previously only SessionStart was installed, so MCP-saved memories on hook-less machines were never checkpointed at all.
+- **Project-family affinity**: search boost, `resume_session`, and the fresh-project nudge now match hierarchically — a session in `BITS/bits_back` counts `BITS` memories as its own (exact > family > global). Previously exact-string matching meant any session started in a subdirectory silently lost ALL project scoping.
+- Resume digest flags a memory-less project explicitly and points to `memgit onboard` (`project_is_new`).
+
+### Fixed
+- **CRITICAL — CR/CRLF corruption + field injection** (found by E2E audit): a body containing `\r` was truncated at the first CR on read-back, and the lost tail re-parsed as *injected fields* (a crafted body could override `RULE:`). `\r` is now escaped like `\n`; round-trip is byte-exact. Windows MCP clients and pasted CRLF text hit this constantly.
+- **CRITICAL — silent memory loss on space-containing slugs**: a markdown memory whose frontmatter `name:` contained spaces staged fine but vanished on every index read (space-delimited index), with no error. Slugs are now normalized at every write surface, and the index reader tolerates legacy entries.
+- **Project-label munging now matches Claude Code byte-for-byte**: `_` and `.` were munged differently than Claude Code's project-dir naming, so memories synced from projects like `bits_back` could never match their own workspace label at recall time.
+- **Cross-project leak in resume**: a project with no memories fell back to a global recency dump — a new client project's first session opened with another client's content. Fallback is now family + global(unscoped) only. Critical (p3) rules are scoped the same way instead of firing in every project.
+- **MCP `save_memory` never checkpointed**: saves were staged only, waiting for a session-end sync that (a) doesn't exist on non-Claude-Code machines and (b) buried them in `sync:` messages. Each save now commits immediately as `save: <slug> [type]` — attributable and rollback-able.
+- **`memgit sync` early-returned without committing staged work** when no markdown memories were found.
+- Body first-line indentation / trailing whitespace no longer stripped (byte-lossless round-trip, incl. indented-code-first bodies).
+- Rich markup no longer interpreted inside displayed user content: `[pj]` type codes, `[[wikilinks]]`, `[token]`-shaped text, and shas like `[fadc1234]` were being eaten as style tags by `memgit show`/`add` output.
+- `memgit lint` exits 1 when issues are found (scripts/CI can gate); empty rules are rejected at write time.
+- MCP: unknown tool call now returns a proper protocol error instead of a success-shaped text blob; `save_memory` accepts `type` as an alias for `type_code` (read tools return the field as `type` — operators mirror it back).
+- `memgit --version` reads the source `__version__` — editable installs reported the metadata version frozen at install time.
+
 ## [0.3.1] — 2026-07-03
 
 ### Added
