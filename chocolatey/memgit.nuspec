@@ -5,9 +5,10 @@
     <version>0.4.0</version>
     <packageSourceUrl>https://github.com/code4161/memgit</packageSourceUrl>
     <owners>code4161</owners>
-    <title>memgit</title>
+    <title>memgit (Git for AI Memory)</title>
     <authors>Hari Hara Sankar K A</authors>
     <projectUrl>https://memgit.dev</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/code4161/memgit@main/assets/logo.png</iconUrl>
     <licenseUrl>https://github.com/code4161/memgit/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <projectSourceUrl>https://github.com/code4161/memgit</projectSourceUrl>
