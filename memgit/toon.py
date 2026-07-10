@@ -14,7 +14,7 @@ from typing import Union
 
 from .models import Mnemonic, MindState, MindStateEntry, Checkpoint, DiffSummary
 
-USER_TYPE_CODES = {"fb", "us", "pj", "rf", "cn", "lx"}
+USER_TYPE_CODES = {"fb", "us", "pj", "rf", "cn", "lx", "co"}
 
 
 def _esc(value: str) -> str:
@@ -405,7 +405,7 @@ def mnemonic_to_markdown(m: Mnemonic) -> str:
     """Convert a Mnemonic back to Claude Code markdown format."""
     type_map = {
         'fb': 'feedback', 'us': 'user', 'pj': 'project',
-        'rf': 'reference', 'cn': 'convention', 'lx': 'lesson',
+        'rf': 'reference', 'cn': 'convention', 'lx': 'lesson', 'co': 'core',
     }
     type_str = type_map.get(m.type_code, 'feedback')
     desc = m.desc or m.rule[:120]

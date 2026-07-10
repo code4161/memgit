@@ -15,6 +15,7 @@ TYPE_MAP = {
     'reference': 'rf',
     'convention': 'cn',
     'lesson': 'lx',
+    'core': 'co',
 }
 
 PRIORITY_MAP = {

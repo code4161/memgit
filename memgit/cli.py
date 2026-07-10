@@ -1,6 +1,7 @@
 """memgit CLI — git for AI memory."""
 
 from __future__ import annotations
+import difflib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,42 @@ def _require_repo() -> Repository:
 from . import __version__ as _version
 
 
-@click.group()
+class AliasedGroup(click.Group):
+    """Root group with command aliases and a did-you-mean fallback.
+
+    Two conveniences over a plain click.Group:
+      * ALIASES maps common alternative verbs to the real command, so
+        `memgit delete <slug>` works as `remove` (an AI reached for `delete`,
+        hit "No such command", and only found `remove` via help — smooth that).
+      * On an unknown command with no alias, suggest the closest real command
+        instead of a bare error, so a typo self-corrects.
+    """
+
+    #: alternative verb -> canonical command name
+    ALIASES = {
+        'delete': 'remove',
+        'rm': 'remove',
+        'del': 'remove',
+    }
+
+    def get_command(self, ctx, cmd_name):
+        # 1. exact match wins
+        rv = super().get_command(ctx, cmd_name)
+        if rv is not None:
+            return rv
+        # 2. known alias -> canonical command
+        target = self.ALIASES.get(cmd_name)
+        if target is not None:
+            return super().get_command(ctx, target)
+        # 3. did-you-mean: closest real command (aliases included as options)
+        candidates = list(self.list_commands(ctx)) + list(self.ALIASES)
+        matches = difflib.get_close_matches(cmd_name, candidates, n=1, cutoff=0.6)
+        if matches:
+            ctx.fail(f"No such command '{cmd_name}'. Did you mean '{matches[0]}'?")
+        return None
+
+
+@click.group(cls=AliasedGroup)
 @click.version_option(_version, prog_name='memgit')
 def cli():
     """memgit — git for AI memory.
@@ -116,8 +152,9 @@ def init(directory):
 @click.argument('slug')
 @click.argument('rule')
 @click.option('--type', '-t', 'type_code', default='fb',
-              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx']),
-              help='fb=feedback us=user pj=project rf=reference cn=convention lx=lesson')
+              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co']),
+              help='fb=feedback us=user pj=project rf=reference cn=convention '
+                   'lx=lesson co=core (prefer `memgit core set` for co)')
 @click.option('--why', '-w', default=None, help='Reasoning / why this rule exists')
 @click.option('--when', '-W', default=None, help='When / where to apply')
 @click.option('--tags', default=None, help='Comma-separated tags')
@@ -174,6 +211,219 @@ def remove(slug):
         console.print(f'[yellow]removed[/yellow] {slug}')
     else:
         console.print(f'[dim]not found: {slug}[/dim]')
+
+
+# ── core ──────────────────────────────────────────────────────────────────────
+
+def _current_project() -> Optional[str]:
+    from .project import project_label_from_path
+    return project_label_from_path(Path.cwd())
+
+
+def _core_slug(project: Optional[str]) -> str:
+    """Globally-unique slug for a project's core guide (the index is store-wide,
+    so each project's core needs its own slug)."""
+    return f'core-{project}' if project else 'core'
+
+
+def _get_core(repo, project: Optional[str]) -> Optional[Mnemonic]:
+    m = repo.get(_core_slug(project))
+    return m if (m is not None and m.type_code == 'co') else None
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def core(ctx):
+    """The per-project core operating guide — an always-injected navigation aid
+    (which tools/skills to reach for). Subordinate to the repo's own rules."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(core_show)
+
+
+@core.command('show')
+def core_show():
+    """Print the current project's core operating guide."""
+    repo = _require_repo()
+    project = _current_project()
+    m = _get_core(repo, project)
+    if m is None:
+        console.print(f'[dim]no core guide for project {project or "(global)"} — '
+                      'set one with `memgit core set` or `memgit core seed`[/dim]')
+        return
+    print((m.body or m.rule).rstrip())
+
+
+@core.command('set')
+@click.option('--body', '-b', default=None,
+              help='Guide text; omit or pass "-" to read stdin')
+@click.option('--rule', '-r', default='core operating guide',
+              help='One-line label for the core memory')
+def core_set(body, rule):
+    """Create or replace the current project's core operating guide."""
+    repo = _require_repo()
+    project = _current_project()
+    if body is None or body == '-':
+        body = sys.stdin.read()
+    body = (body or '').strip()
+    if not body:
+        err.print('[red]empty core guide — nothing saved[/red]')
+        sys.exit(1)
+    m = Mnemonic(
+        type_code='co', slug=_core_slug(project),
+        timestamp=datetime.now(timezone.utc),
+        rule=rule, body=body, project=project, priority=2,
+    )
+    sha = repo.add(m)
+    console.print(f'[green]staged core[/green]  {m.slug} [{sha[:8]}] '
+                  f'({len(body)} chars) — commit or sync to checkpoint')
+
+
+@core.command('seed')
+@click.option('--force', is_flag=True, help='Overwrite an existing core guide')
+def core_seed(force):
+    """Draft a core guide from existing host skills + rules (then edit/curate)."""
+    repo = _require_repo()
+    project = _current_project()
+    if _get_core(repo, project) is not None and not force:
+        console.print('[yellow]a core guide already exists[/yellow] — '
+                      'edit it (`memgit core edit`) or pass --force to redraft')
+        return
+    from .delivery import build_seed
+    body = build_seed(Path.cwd())
+    m = Mnemonic(
+        type_code='co', slug=_core_slug(project),
+        timestamp=datetime.now(timezone.utc),
+        rule='core operating guide', body=body, project=project, priority=2,
+    )
+    sha = repo.add(m)
+    console.print(f'[green]staged core[/green]  {m.slug} [{sha[:8]}] '
+                  f'({len(body)} chars) — review with `memgit core show`, '
+                  'refine with `memgit core edit`, then `memgit core sync`')
+
+
+@core.command('sync')
+@click.option('--host', 'hosts', multiple=True,
+              help='Deliver only to these hosts (repeatable); default = detected')
+@click.option('--all', 'all_hosts', is_flag=True, help='Deliver to every supported host')
+@click.option('--dry-run', is_flag=True, help='Show what would be written')
+def core_sync(hosts, all_hosts, dry_run):
+    """Write the core guide into each host's memgit-owned rule file (additive)."""
+    repo = _require_repo()
+    project = _current_project()
+    m = _get_core(repo, project)
+    if m is None:
+        err.print('[red]no core guide for this project[/red] — '
+                  'run `memgit core seed` or `memgit core set` first')
+        sys.exit(1)
+    from .delivery import deliver
+    results = deliver(Path.cwd(), m.body or m.rule,
+                      hosts=list(hosts) or None, all_hosts=all_hosts, dry_run=dry_run)
+    if not results:
+        console.print('[dim]no target hosts detected — pass --all or --host <name>[/dim]')
+        return
+    verb = 'would write' if dry_run else 'wrote'
+    for r in results:
+        color = {'created': 'green', 'updated': 'green', 'unchanged': 'dim',
+                 'over-cap': 'red'}.get(r.action, 'white')
+        note = ' (exceeds host size cap — trim the guide)' if r.action == 'over-cap' else ''
+        console.print(f'  [{color}]{r.action:9}[/{color}] {r.label:14} '
+                      f'{r.path} ({r.bytes}b){note}')
+    if not dry_run:
+        console.print(f'[green]{verb}[/green] core guide to '
+                      f'{sum(1 for r in results if r.action in ("created", "updated"))} host file(s)')
+
+
+def _refresh_core(repo, project, redeliver=True) -> bool:
+    """Recompute the auto (usage-driven) section of the project's core guide.
+    If it changed, checkpoint the new body and refresh already-delivered host
+    files. The curated region is never touched. Returns True if it changed."""
+    from .delivery import refresh_core_body, deliver
+    m = _get_core(repo, project)
+    if m is None:
+        return False
+    now = datetime.now(timezone.utc)
+    new_body = refresh_core_body(m.body or '', repo, project, now)
+    if new_body is None:
+        return False
+    repo.add(Mnemonic(type_code='co', slug=m.slug, timestamp=now,
+                      rule=m.rule, body=new_body, project=project, priority=2))
+    repo.commit(message=f'core: auto-refresh {m.slug}', trigger='auto')
+    if redeliver:
+        try:
+            deliver(Path.cwd(), new_body, only_existing=True)
+        except OSError:
+            pass
+    return True
+
+
+def _maybe_auto_core(repo) -> None:
+    """Best-effort auto-grow, called from `sync` (the Stop hook). Silent and
+    never raises — the AI is the operator, so this must just work in the
+    background without a human running anything."""
+    try:
+        _refresh_core(repo, _current_project())
+    except Exception:
+        pass
+
+
+@core.command('refresh')
+def core_refresh():
+    """Recompute the usage-driven section of the core guide now."""
+    repo = _require_repo()
+    changed = _refresh_core(repo, _current_project())
+    console.print('[green]core refreshed[/green]' if changed
+                  else '[dim]core already current[/dim]')
+
+
+@core.command('heal')
+@click.option('--reset-usage', is_flag=True,
+              help='Also wipe the usage ledger (use if the signal looks corrupted)')
+def core_heal(reset_usage):
+    """Self-heal a core guide that feels off — rebuild the curated base from a
+    fresh skill/rules seed, recompute the usage section, and re-deliver to hosts.
+    The AI runs this when the guide looks stale, wrong, or bloated."""
+    repo = _require_repo()
+    project = _current_project()
+    from .delivery import build_seed, refresh_core_body, deliver
+    from .usage import reset_usage as _reset
+    if reset_usage:
+        _reset(repo)
+    now = datetime.now(timezone.utc)
+    curated = build_seed(Path.cwd())
+    body = refresh_core_body(curated, repo, project, now) or (curated.rstrip() + '\n')
+    repo.add(Mnemonic(type_code='co', slug=_core_slug(project), timestamp=now,
+                      rule='core operating guide', body=body,
+                      project=project, priority=2))
+    repo.commit(message=f'core: heal {_core_slug(project)}', trigger='explicit')
+    results = deliver(Path.cwd(), body, only_existing=True)
+    rewritten = sum(1 for r in results if r.action in ('created', 'updated'))
+    console.print(f'[green]healed[/green] core guide (rebuilt {len(body)} chars, '
+                  f'refreshed {rewritten} host file(s))')
+
+
+@core.command('edit')
+def core_edit():
+    """Open the current project's core guide in $EDITOR."""
+    repo = _require_repo()
+    project = _current_project()
+    existing = _get_core(repo, project)
+    current = (existing.body if existing else '') or ''
+    edited = click.edit(current)
+    if edited is None:
+        console.print('[dim]no changes[/dim]')
+        return
+    edited = edited.strip()
+    if not edited:
+        console.print('[dim]empty — not saved[/dim]')
+        return
+    m = Mnemonic(
+        type_code='co', slug=_core_slug(project),
+        timestamp=datetime.now(timezone.utc),
+        rule=(existing.rule if existing else 'core operating guide'),
+        body=edited, project=project, priority=2,
+    )
+    sha = repo.add(m)
+    console.print(f'[green]staged core[/green]  {m.slug} [{sha[:8]}]')
 
 
 # ── commit ────────────────────────────────────────────────────────────────────
@@ -327,6 +577,18 @@ def _format_resume_plain(ctx: dict) -> str:
         f'# memgit resume — thread {ctx["thread"]} @ {ctx["head"] or "none"} '
         f'({ctx["checkpoint_count"]} checkpoints, {ctx["total_memories"]} memories{proj})',
     ]
+    # Core operating guide first: a per-project navigation aid rendered in FULL
+    # (body, not the clipped rule) so the host knows which tools/skills to use
+    # up front. Explicitly subordinate — the repo's own rules win on conflict.
+    if ctx.get('core_memories'):
+        lines.append('')
+        lines.append('## Core operating guide — always apply')
+        lines.append('(memgit-managed navigation aid. If this conflicts with the '
+                     "repo's own CLAUDE.md / AGENTS.md / rules, THOSE win — not policy.)")
+        for m in ctx['core_memories']:
+            body = (m.get('body') or m['rule']).rstrip()
+            lines.append('')
+            lines.append(body)
     st = ctx['staged']
     if st['new'] or st['updated'] or st['removed']:
         lines.append('')
@@ -1054,7 +1316,9 @@ def sync(message, dry_run):
             sha = repo.commit(message=msg, trigger='session_end') if msg else None
             if sha:
                 console.print(f'[green]sync[/green]  {sha[:8]}  {msg}')
+                _maybe_auto_core(repo)
                 return
+        _maybe_auto_core(repo)
         console.print('[dim]No Claude Code memories found.[/dim]')
         return
 
@@ -1079,6 +1343,7 @@ def sync(message, dry_run):
                       (f'  [dim]({skipped} skipped)[/dim]' if skipped else ''))
     else:
         console.print(f'[dim]sync: no changes ({count} memories already current)[/dim]')
+    _maybe_auto_core(repo)
 
 
 # ── graph ─────────────────────────────────────────────────────────────────────

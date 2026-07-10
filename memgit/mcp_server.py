@@ -39,7 +39,14 @@ _SERVER_DESCRIPTION = (
     "If the current project has NO memories yet (adopted mid-project), bootstrap it: "
     "extract 10-20 durable facts from README/CLAUDE.md/docs/git history and save_memory "
     "each — `memgit onboard` prints the full brief. "
-    "(4) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini."
+    "(4) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini. "
+    "(5) CORE OPERATING GUIDE — each project has one (`memgit core`): a per-project navigation aid "
+    "(which skills/tools/commands to reach for) that is injected at session start AND written into every "
+    "host's own rules file, so any tool knows how to work here even when its CLAUDE.md/skills aren't set up. "
+    "If resume shows no core guide for this project, seed it ONCE: `memgit core seed` (drafts it from the "
+    "project's existing skills + rules), then `memgit core sync` to deliver it to every AI tool. It grows "
+    "automatically from usage; if it ever looks stale, wrong, or bloated, run `memgit core heal`. It is a "
+    "fallback aid, always SUBORDINATE to the repo's own CLAUDE.md / AGENTS.md / rules."
 )
 
 _TYPE_DESCRIPTIONS = (
@@ -48,7 +55,9 @@ _TYPE_DESCRIPTIONS = (
     "pj=project (active projects, goals, decisions, deadlines), "
     "rf=reference (pointers to external systems, URLs, tools), "
     "cn=convention (code style, naming, architecture rules), "
-    "lx=lesson (lessons learned, post-mortems, 'we got burned by X')"
+    "lx=lesson (lessons learned, post-mortems, 'we got burned by X'), "
+    "co=core (the per-project operating guide — which tools/skills/commands to reach for; "
+    "always injected at session start, subordinate to the repo's own rules)"
 )
 
 
@@ -182,7 +191,7 @@ def run_server(store_path: Path | None = None) -> None:
                         },
                         "type_filter": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
                             "description": _TYPE_DESCRIPTIONS,
                         },
                         "project": {
@@ -244,7 +253,7 @@ def run_server(store_path: Path | None = None) -> None:
                     "properties": {
                         "type_filter": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
                             "description": _TYPE_DESCRIPTIONS,
                         },
                         "min_priority": {
@@ -303,13 +312,13 @@ def run_server(store_path: Path | None = None) -> None:
                         },
                         "type_code": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
                             "description": _TYPE_DESCRIPTIONS,
                             "default": "fb",
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx"],
+                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
                             "description": (
                                 "Alias for type_code (read tools return this "
                                 "field as 'type', so both spellings work here)."
@@ -431,6 +440,11 @@ def run_server(store_path: Path | None = None) -> None:
                 out = [_mnem_to_dict(r.mnemonic, r.score) for r in results]
                 text = json.dumps(out, indent=2)
 
+            try:
+                from .usage import record_hits
+                record_hits(repo, [r.mnemonic.slug for r in results])
+            except Exception:
+                pass
             return [TextContent(type="text", text=text)]
 
         elif name == "get_memory":

@@ -891,6 +891,24 @@ class Repository:
             if m.priority == 3
         ]
 
+        # Core operating guide (type 'co') — a per-project navigation aid that
+        # is ALWAYS injected in full (its body, not the clipped rule), so any
+        # host instantly knows which tools/skills to reach for even when its
+        # own CLAUDE.md/skills aren't configured. Per-project scoped (Q3): a
+        # session only sees its own project tree's core, never another's; with
+        # no project context, only unscoped core shows. It is a fallback aid,
+        # NOT authority — the repo's own rules win on conflict.
+        if project:
+            core_pool = [m for m in mnemonics
+                         if project_affinity(m.project, project) >= 1]
+        else:
+            core_pool = [m for m in mnemonics if not m.project]
+        core = [
+            {'slug': m.slug, 'rule': m.rule, 'body': m.body}
+            for m in sorted(core_pool, key=lambda m: m.slug)
+            if m.type_code == 'co'
+        ]
+
         count, first_ts = self.chain_info(thread)
         return {
             'thread': thread,
@@ -904,6 +922,7 @@ class Repository:
             'staged': staged,
             'recent_memories': recent_mems,
             'critical_memories': critical,
+            'core_memories': core,
             'maintenance': self.maintenance_hint(count),
         }
 

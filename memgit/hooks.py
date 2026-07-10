@@ -137,6 +137,13 @@ def prompt_recall() -> int:
             seen_file.write_text('\n'.join(sorted(seen)))
         except OSError:
             pass
+
+    # Feed the self-improving core guide: which memories actually surface.
+    try:
+        from .usage import record_hits
+        record_hits(repo, [r.mnemonic.slug for r in results])
+    except Exception:
+        pass
     return 0
 
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0] — 2026-07-11
+
+Core operating guide — a per-project, always-on navigation aid that memgit carries into every AI host, so any tool instantly knows which skills/tools/commands to reach for even when its own CLAUDE.md/skills aren't configured. Built for the AI-as-operator model: the user installs, the AI drives it, and it maintains itself.
+
+### Added
+- **New memory type `co` (core)** — a normal, versioned `Mnemonic` (inherits checkpointing, sync, and cross-tool availability). Per-project scoped; injected in FULL at session start (its body, not the clipped rule), at the top of `resume` and the MCP `resume_session`, under an explicit header stating it is subordinate to the repo's own rules.
+- **`memgit core` command group**: `show`, `set`, `edit`, `seed` (drafts a routing guide from the project's existing host skills + rule files), `sync` (delivers it), `refresh` (recompute usage section), `heal` (self-repair).
+- **Cross-host delivery** (`memgit core sync`): writes a DEDICATED, memgit-owned rule file into each detected host's native surface — `.claude/rules/memgit.md`, `.cursor/rules/memgit.mdc` (`alwaysApply: true`), `.windsurf/rules/memgit.md` (`trigger: always_on`), `.clinerules/memgit.md`, `.roo/rules/memgit.md`, `.continue/rules/memgit.md`, `.gemini/memgit.md`; Codex's shared `AGENTS.md` gets a marker-delimited block. Additive only — never touches the host's own config or content. Idempotent (overwrite-in-full), size-cap aware (Windsurf 12k, Codex 32k).
+- **Self-improving accumulation loop**: a sidecar usage ledger (`.memgit/cache/usage.json`, kept off the content-addressed object so memories stay immutable) counts which memories actually surface at recall/search time. The most-used, project-scoped memories are auto-promoted as POINTERS into the guide's auto-managed section on every `sync` (the Stop hook) — bounded by a hard size/item budget, decayed on a 2-week half-life, deduped against curated text, and NEVER promoting critical rules or conventions (those are policy, not navigation). The curated region is preserved byte-for-byte. `memgit core heal` rebuilds a guide that has drifted.
+- **`delete` / `rm` / `del` aliases + did-you-mean** (also in 0.4.1) carried forward.
+
+## [0.4.1] — 2026-07-11
+
+Command ergonomics. A cross-project usage audit caught an AI reaching for `memgit delete`, hitting a bare "No such command", and only recovering by reading `memgit help`. The CLI now meets that intent halfway.
+
+### Added
+- **`delete` / `rm` / `del` aliases for `remove`** — the natural verbs now work instead of erroring.
+- **Did-you-mean suggestions** on the root group: a mistyped command (`remve`, `serch`) now returns `No such command 'X'. Did you mean 'Y'?` (closest match via difflib), instead of a bare error. Unrelated garbage still fails cleanly with no misleading suggestion. Exact commands and `--help` are unchanged.
+
 ## [0.4.0] — 2026-07-07
 
 Guardrail-grade memory. A transcript audit of 166 real Claude Code sessions showed the hard truth: context *injection* (hooks) delivered in 100% of sessions, while *voluntary* tool engagement happened in 6% — sessions found production root causes and client decisions and saved none of them. What a hook enforces happens; what a tool description suggests mostly doesn't. 0.4.0 makes recall and capture hook-enforced, and fixes every defect found in a full end-to-end audit (store forensics + 6-project usage scan + functional validation).
