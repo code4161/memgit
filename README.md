@@ -250,6 +250,16 @@ The tool descriptions teach the AI **judgment** — "does this request depend on
 
 ---
 
+## Core operating guide (v0.5.0)
+
+A project's hardest onboarding problem isn't *what* it does — it's *how to work in it*: which skill to invoke, which command to run, which tool to reach for. That lives in a `CLAUDE.md` or a skills folder the AI host may or may not be configured to read. memgit carries it for you.
+
+`memgit core seed` distills a compact operating guide from the project's existing skills + rule files. `memgit core sync` writes it into **every AI host's own rules surface** as a dedicated, memgit-owned file — `.claude/rules/memgit.md`, `.cursor/rules/memgit.mdc`, `.windsurf/rules/memgit.md`, `.clinerules/`, `.roo/rules/`, `.continue/rules/`, `.gemini/`, and a marker-block in Codex's `AGENTS.md`. It's **additive only** — memgit never touches your own config or content — and injected at session start, so any tool knows how to work in the project even when its native setup is missing.
+
+And it **learns**: a sidecar usage ledger tracks which memories actually get recalled, and the most-used ones are auto-promoted as pointers into the guide over time (budget-capped, decaying, and always subordinate to the repo's own rules — it never restates or overrides them). Drifted? `memgit core heal` rebuilds it.
+
+---
+
 ## Commands
 
 ```bash
@@ -267,6 +277,13 @@ memgit search <query>             # BM25 relevance search
 memgit rollback <ref>             # restore state to a checkpoint (HEAD~N or SHA)
 memgit resume                     # where we left off — session-start digest
 memgit merge <thread>             # three-way merge a thread into the current one
+memgit remove <slug>              # (aliases: delete, rm, del) — mistypes get a "did you mean?"
+
+# Core operating guide — per-project, always-on, cross-host
+memgit core seed                  # draft a guide from this project's skills + rule files
+memgit core sync                  # deliver it into each AI host's own rules file (additive)
+memgit core show / edit           # view / curate the guide
+memgit core heal                  # self-repair a guide that has drifted
 
 # Scale & proof
 memgit squash                     # compress old history (archives what it collapses)
@@ -402,6 +419,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] D3.js graph visualization of memory relationships
 - [x] `memgit resume` + SessionStart hook — sessions start with "where we left off"
 - [x] Guardrail hooks — per-prompt auto-recall + end-of-session capture guard (v0.4.0)
+- [x] Core operating guide — per-project, always-on, cross-host, self-improving (v0.5.0)
 - [x] `memgit gc` — space reclamation (mark-and-sweep, lossless squash archive)
 - [x] Multi-agent write safety — store lock, auto-merge commits, `memgit merge`
 - [x] PyPI + Homebrew (tap) + npm published (v0.1.5)
