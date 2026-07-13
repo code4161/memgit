@@ -1,3 +1,3 @@
 """memgit — git for AI memory."""
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"

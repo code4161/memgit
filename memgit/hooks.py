@@ -261,10 +261,15 @@ def context_recall() -> int:
     if not tokens:
         return 0
     # Tag matches a path token exactly, case-insensitive. (Substring matching
-    # would fire 'api' against half the filesystem.)
+    # would fire 'api' against half the filesystem.) The project label and its
+    # components are excluded — every path under the workspace contains them,
+    # and importer-derived label tags ('personal', 'business') are not topics.
+    label_parts = set((project or '').lower().split('-')) - {''}
     lower_tags = {t.lower(): t for t in tagmap}
     candidates = []
     for tok in tokens:
+        if tok in label_parts or tok == (project or '').lower():
+            continue
         tag = lower_tags.get(tok)
         if not tag:
             continue

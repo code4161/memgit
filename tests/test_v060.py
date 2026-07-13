@@ -451,6 +451,17 @@ class TestContextRecall:
                              payload("delta", "cap1"), repo)
         assert out4 == ""                         # hard cap 3/session
 
+    def test_project_label_component_tags_never_hinted(self, repo, monkeypatch, capsys):
+        """Every path under the workspace contains the label's words —
+        importer-derived label tags ('personal', 'business') are not topics.
+        Found live: 77 'business'-tagged memories hinted on MEMORY.md."""
+        from memgit.hooks import context_recall
+        self._seed(repo, n=5, tag="business")
+        rc, out = _run_hook(monkeypatch, capsys, context_recall, {
+            "tool_input": {"file_path": "/Users/x/Personal business/notes.md"},
+            "cwd": "/Users/x/Personal business", "session_id": "ctx6"}, repo)
+        assert out == ""
+
     def test_skips_tag_already_hinted_by_prompt_recall(self, repo, monkeypatch, capsys):
         from memgit.hooks import context_recall
         self._seed(repo, n=3, tag="zebpay")

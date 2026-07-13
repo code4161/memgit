@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.6.1] — 2026-07-13
+
+### Fixed
+- **Context-recall no longer hints project-label tags** — caught live within minutes of installing 0.6.0: reading a file under `Personal business/` hinted "77 memories tagged 'business'". Every path inside a workspace contains the label's words, and importer-derived label tags are not topics — the PostToolUse hook now excludes the current project label and its `-`-components from matching, the same exclusion the memory index already applied.
+
 ## [0.6.0] — 2026-07-13
 
 The passive layer now advertises what the active layer knows. Measured across 289 real sessions (Jul 7–13): hook-injected recall delivered in ~59% of sessions, but only **6.8%** of recall-injected sessions ever ran an active `search_memories` — and `resume_session` was called once, ever. An AI operator explained why when asked: *"the better your passive recall gets, the less an agent thinks to actively query — I treated the injected sample as the memory rather than as a teaser of a queryable store."* When forced to query, per-task searches surfaced depth (do-not-push warnings, exact version state) that passive recall never showed. 0.6.0 makes every injected block carry a truthful advertisement of depth (counts per topic), the exact one-call query to get it, and trustworthy live state (trackers + supersession) — so what is injected is never stale and always names what more exists.
