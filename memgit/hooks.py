@@ -137,7 +137,7 @@ def prompt_recall() -> int:
     # (Measured before this line existed: 6.8% of recall-injected sessions
     # ever ran a search.) Hinted-but-not-shown memories are deliberately NOT
     # added to the dedup file or the usage ledger — they weren't surfaced.
-    more_line, hinted_tag = _depth_hint(results, mnemonics, seen)
+    more_line, hinted_tag = _depth_hint(results, mnemonics, seen, project)
     if more_line:
         lines.append(more_line)
     lines.append('</memgit-recall>')
@@ -169,19 +169,25 @@ def prompt_recall() -> int:
     return 0
 
 
-def _depth_hint(results, mnemonics, seen: set[str]) -> tuple[Optional[str], Optional[str]]:
+def _depth_hint(results, mnemonics, seen: set[str],
+                project: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """One '+N more on <tag>' line advertising depth behind the injected hits.
 
     Picks the single best tag: among tags carried by the injected results,
     the one with the most ACTIVE memories that were neither injected nor
     already seen this session. Requires >= 2 (a count of 1 is not depth and
-    teaches the model to ignore counts). At most one line, ever.
-    Returns (line, tag) — both None when nothing clears the bar.
+    teaches the model to ignore counts). Project-label tags are excluded —
+    the same noise rule as the memory index and context recall. At most one
+    line, ever. Returns (line, tag) — both None when nothing clears the bar.
     """
+    from .links import label_noise
+    noise = label_noise(project)
     injected = {r.mnemonic.slug for r in results}
     tags: set[str] = set()
     for r in results:
-        tags.update(t.strip() for t in r.mnemonic.tags if t.strip() and len(t.strip()) <= 40)
+        tags.update(t.strip() for t in r.mnemonic.tags
+                    if t.strip() and len(t.strip()) <= 40
+                    and t.strip().lower() not in noise)
     if not tags:
         return None, None
     best_tag, best_n = None, 0
@@ -261,14 +267,14 @@ def context_recall() -> int:
     if not tokens:
         return 0
     # Tag matches a path token exactly, case-insensitive. (Substring matching
-    # would fire 'api' against half the filesystem.) The project label and its
-    # components are excluded — every path under the workspace contains them,
-    # and importer-derived label tags ('personal', 'business') are not topics.
-    label_parts = set((project or '').lower().split('-')) - {''}
+    # would fire 'api' against half the filesystem.) Project-label tags are
+    # excluded via the shared noise rule.
+    from .links import label_noise
+    noise = label_noise(project)
     lower_tags = {t.lower(): t for t in tagmap}
     candidates = []
     for tok in tokens:
-        if tok in label_parts or tok == (project or '').lower():
+        if tok in noise:
             continue
         tag = lower_tags.get(tok)
         if not tag:

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.6.2] — 2026-07-13
+
+### Fixed
+- **Recall depth hint no longer advertises project-label tags** — the third surface of the same noise class, also caught live ("+75 more saved on 'business'"). The exclusion rule (project label + its `-`-components are not topics) is now a single shared helper (`links.label_noise`) applied uniformly by the memory index, the context-recall hook, and the prompt-recall depth hint.
+
 ## [0.6.1] — 2026-07-13
 
 ### Fixed

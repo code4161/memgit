@@ -373,6 +373,28 @@ class TestEntityIndex:
         injected = {l.strip() for l in seen.splitlines()}
         assert len(injected) <= 3
 
+    def test_depth_hint_skips_project_label_tags(self, repo, monkeypatch, capsys):
+        """Third surface of the label-noise bug (found live: '+75 more on
+        'business''): the recall depth hint must apply the same exclusion as
+        the memory index and context recall."""
+        from memgit.hooks import prompt_recall
+        proj = "Personal-business"
+        repo.add(_mk("zebpay-caps", rule="ZebPay caps INR withdrawals at 10L/day",
+                     tags=["business"], project=proj))
+        for i in range(5):
+            repo.add(_mk(f"biz-{i}", rule=f"unrelated business fact {i}",
+                         tags=["business"], project=proj))
+        repo.commit(message="seed")
+        monkeypatch.setattr("memgit.hooks.project_label_from_path",
+                            lambda p: proj, raising=False)
+        import memgit.project as project_mod
+        monkeypatch.setattr(project_mod, "project_label_from_path", lambda p: proj)
+        rc, out = _run_hook(monkeypatch, capsys, prompt_recall, {
+            "prompt": "what are the zebpay withdrawal caps and limits?",
+            "cwd": "/tmp", "session_id": "noise1"}, repo)
+        assert "zebpay-caps" in out
+        assert "more saved on 'business'" not in out
+
     def test_no_hint_when_depth_below_two(self, repo, monkeypatch, capsys):
         from memgit.hooks import prompt_recall
         repo.add(_mk("zebpay-caps", rule="ZebPay caps INR withdrawals at 10L/day",

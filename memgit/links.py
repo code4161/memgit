@@ -149,6 +149,17 @@ def normalize_slug_list(value) -> list[str]:
 
 # ── entity index ──────────────────────────────────────────────────────────────
 
+def label_noise(project: Optional[str]) -> set[str]:
+    """Lowercased tags that are noise for the current workspace: the project
+    label and its '-'-components. Importer-derived label tags ('personal',
+    'business') are not topics, and every path inside a workspace contains
+    the label's words — so no depth surface may advertise them."""
+    proj_lower = (project or '').lower()
+    parts = {p for p in proj_lower.split('-') if p}
+    if proj_lower:
+        parts.add(proj_lower)
+    return parts
+
 def entity_index(mnemonics: list[Mnemonic], project: Optional[str],
                  min_count: int = 2, cap: int = 8) -> list[tuple[str, int]]:
     """Tag → memory-count pairs advertising the store's depth on each topic.
@@ -175,16 +186,10 @@ def entity_index(mnemonics: list[Mnemonic], project: Optional[str],
             tag = tag.strip()
             if tag:
                 counts[tag] += 1
-    # The project's own label AND its '-'-separated components are noise, not
-    # topics ("Personal-business" seeds importer tags 'personal'/'business'
-    # that would dominate the index and lead to junk searches).
-    proj_lower = (project or '').lower()
-    label_parts = {p for p in proj_lower.split('-') if p}
+    noise = label_noise(project)
     items = [
         (tag, n) for tag, n in counts.items()
-        if n >= min_count
-        and tag.lower() != proj_lower
-        and tag.lower() not in label_parts
+        if n >= min_count and tag.lower() not in noise
     ]
     items.sort(key=lambda tn: (-tn[1], tn[0]))
     return items[:cap]
