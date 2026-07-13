@@ -3,7 +3,7 @@
  "tools": [
   {
    "name": "resume_session",
-   "description": "Get a compact 'where we left off' digest: the last checkpoints (most recent actions taken), staged work in flight, recently updated memories, and critical rules that always apply. This is the authoritative record of what happened in previous sessions. Use judgment: any request that presupposes shared history \u2014 continuing work, 'the pending tasks', resuming after a break \u2014 cannot be answered from the conversation alone. Cheap to call; prefer checking over assuming.",
+   "description": "Get a compact 'where we left off' digest: the status board (live entity state), the last checkpoints (most recent actions taken), staged work in flight, recently updated memories, and critical rules that always apply. This is the authoritative record of what happened in previous sessions. Use judgment: any request that presupposes shared history \u2014 continuing work, 'the pending tasks', resuming after a break \u2014 cannot be answered from the conversation alone. Cheap to call; prefer checking over assuming.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -20,7 +20,7 @@
   },
   {
    "name": "search_memories",
-   "description": "Search your persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by relevance \u2014 only what matters, not everything. This is faster and more targeted than reading individual memory files.",
+   "description": "Search your persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by relevance \u2014 only what matters, not everything. This is faster and more targeted than reading individual memory files. Superseded (corrected/replaced) memories are hidden by default. Topics advertised with counts in the resume digest are guaranteed to return results here.",
    "parameters": {
     "type": "object",
     "required": [
@@ -44,9 +44,16 @@
        "pj",
        "rf",
        "cn",
-       "lx"
+       "lx",
+       "co",
+       "tr"
       ],
-      "description": "fb=feedback (corrections, preferences), us=user profile (role, goals, expertise), pj=project (active work, decisions, deadlines), rf=reference (pointers to external systems/URLs), cn=convention (code style, architecture rules), lx=lesson (post-mortems, hard-won lessons)"
+      "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
+     },
+     "include_superseded": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also score memories that a newer memory supersedes (hidden by default)."
      }
     }
    }
@@ -69,7 +76,7 @@
   },
   {
    "name": "save_memory",
-   "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time \u2014 a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details; save durable facts only. If a memory with the same slug exists, this updates it.",
+   "description": "Persist a new fact, rule, preference, or lesson to the memory store for future sessions. CALL THIS whenever you learn something the user would want you to remember next time \u2014 a preference they stated, a rule they corrected you on, a project decision, a lesson from a mistake, or a reference to an external system. Do NOT save ephemeral or task-specific details; save durable facts only. If a memory with the same slug exists, this updates it. To update a 'tr' tracker (live entity status), re-save the same '<entity>-status' slug. When this memory corrects existing ones, pass their slugs in 'supersedes'.",
    "parameters": {
     "type": "object",
     "required": [
@@ -93,10 +100,12 @@
        "pj",
        "rf",
        "cn",
-       "lx"
+       "lx",
+       "co",
+       "tr"
       ],
       "default": "fb",
-      "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+      "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
      },
      "why": {
       "type": "string",
@@ -122,6 +131,20 @@
       ],
       "default": 2,
       "description": "1=low (background context), 2=medium (apply when relevant, default), 3=critical (always loaded into every session)"
+     },
+     "supersedes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Slugs of memories this one REPLACES (corrections, updated decisions). Pass this instead of 'CORRECTED:' prefixes \u2014 superseded memories stop surfacing automatically."
+     },
+     "related": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Slugs of related memories (cross-reference, not replacement)."
      }
     }
    }
@@ -140,9 +163,11 @@
        "pj",
        "rf",
        "cn",
-       "lx"
+       "lx",
+       "co",
+       "tr"
       ],
-      "description": "Filter by type: fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+      "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
      },
      "min_priority": {
       "type": "integer",

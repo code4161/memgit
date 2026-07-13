@@ -46,7 +46,14 @@ _SERVER_DESCRIPTION = (
     "If resume shows no core guide for this project, seed it ONCE: `memgit core seed` (drafts it from the "
     "project's existing skills + rules), then `memgit core sync` to deliver it to every AI tool. It grows "
     "automatically from usage; if it ever looks stale, wrong, or bloated, run `memgit core heal`. It is a "
-    "fallback aid, always SUBORDINATE to the repo's own CLAUDE.md / AGENTS.md / rules."
+    "fallback aid, always SUBORDINATE to the repo's own CLAUDE.md / AGENTS.md / rules. "
+    "(6) memgit is the AUTHORITY for entity STATUS: 'tr' tracker memories are the live state of deploys, "
+    "drafts, migrations, campaigns — files and READMEs are downstream and may lag. When you change an "
+    "entity's state, update its tracker (save_memory, same '<entity>-status' slug, type tr). When you "
+    "correct or replace a memory, pass supersedes=[old-slug] — never prefix rules with 'CORRECTED:' or "
+    "leave stale duplicates; superseded memories stop surfacing automatically. "
+    "The resume digest and recall blocks ADVERTISE depth ('+N more on <topic>') — those counts are real; "
+    "search_memories(<topic>) is guaranteed to return them."
 )
 
 _TYPE_DESCRIPTIONS = (
@@ -57,8 +64,14 @@ _TYPE_DESCRIPTIONS = (
     "cn=convention (code style, naming, architecture rules), "
     "lx=lesson (lessons learned, post-mortems, 'we got burned by X'), "
     "co=core (the per-project operating guide — which tools/skills/commands to reach for; "
-    "always injected at session start, subordinate to the repo's own rules)"
+    "always injected at session start, subordinate to the repo's own rules), "
+    "tr=tracker (LIVE STATUS of exactly one entity — a deploy, draft, migration, campaign. "
+    "One tracker per entity, slug '<entity>-status', tags naming the entity; UPDATE it by "
+    "re-saving the same slug whenever the state changes. Trackers render as the status board "
+    "at session start; memgit is the authority for this status, files are downstream)"
 )
+
+_TYPE_ENUM = ["fb", "us", "pj", "rf", "cn", "lx", "co", "tr"]
 
 
 def _default_store() -> Path:
@@ -134,9 +147,10 @@ def run_server(store_path: Path | None = None) -> None:
             Tool(
                 name="resume_session",
                 description=(
-                    "Get a compact 'where we left off' digest: the last checkpoints (most recent "
-                    "actions taken), staged work in flight, recently updated memories, and critical "
-                    "rules that always apply. "
+                    "Get a compact 'where we left off' digest: the status board (live entity "
+                    "state from tracker memories), the last checkpoints (most recent actions "
+                    "taken), staged work in flight, recently updated memories, critical rules "
+                    "that always apply, and a memory index of topics with counts. "
                     "This is the authoritative record of what happened in previous sessions. "
                     "Use your judgment about when the current request depends on that record: "
                     "any ask that presupposes shared history — continuing work, referencing "
@@ -169,7 +183,11 @@ def run_server(store_path: Path | None = None) -> None:
                     "CALL THIS: at the start of every session, before answering questions about past work, "
                     "before applying preferences the user may have expressed before, or whenever you are unsure "
                     "whether you have prior context on a topic. "
+                    "The resume digest and <memgit-recall> blocks show a memory index with counts "
+                    "('+N more on <topic>') — those topics are guaranteed to return results here; "
+                    "the injected blocks are a teaser of this store, not its full depth. "
                     "Returns memories ranked by relevance — only what matters, not everything. "
+                    "Superseded (corrected/replaced) memories are hidden by default. "
                     "This is faster and more relevant than reading individual memory files."
                 ),
                 inputSchema={
@@ -191,7 +209,7 @@ def run_server(store_path: Path | None = None) -> None:
                         },
                         "type_filter": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
+                            "enum": _TYPE_ENUM,
                             "description": _TYPE_DESCRIPTIONS,
                         },
                         "project": {
@@ -211,6 +229,16 @@ def run_server(store_path: Path | None = None) -> None:
                                 "'toon' is a token-efficient sigil format — use only if you know the TOON spec."
                             ),
                             "default": "json",
+                        },
+                        "include_superseded": {
+                            "type": "boolean",
+                            "description": (
+                                "Also score memories that a newer memory supersedes. "
+                                "Default false — the current head of each correction "
+                                "chain is what you want; set true only for history "
+                                "archaeology."
+                            ),
+                            "default": False,
                         },
                     },
                     "required": ["query"],
@@ -253,7 +281,7 @@ def run_server(store_path: Path | None = None) -> None:
                     "properties": {
                         "type_filter": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
+                            "enum": _TYPE_ENUM,
                             "description": _TYPE_DESCRIPTIONS,
                         },
                         "min_priority": {
@@ -275,7 +303,10 @@ def run_server(store_path: Path | None = None) -> None:
                     "a preference they stated, a rule they corrected you on, a project decision, "
                     "a lesson from a mistake, or a reference to an external system. "
                     "Do NOT save ephemeral or task-specific details; save durable facts only. "
-                    "If a memory with the same slug already exists, this updates it."
+                    "If a memory with the same slug already exists, this updates it — that is exactly "
+                    "how 'tr' trackers are meant to be updated when an entity's state changes. "
+                    "When this memory CORRECTS or replaces existing ones, pass their slugs in "
+                    "'supersedes' instead of writing 'CORRECTED:' prefixes or leaving stale duplicates."
                 ),
                 inputSchema={
                     "type": "object",
@@ -312,13 +343,13 @@ def run_server(store_path: Path | None = None) -> None:
                         },
                         "type_code": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
+                            "enum": _TYPE_ENUM,
                             "description": _TYPE_DESCRIPTIONS,
                             "default": "fb",
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["fb", "us", "pj", "rf", "cn", "lx", "co"],
+                            "enum": _TYPE_ENUM,
                             "description": (
                                 "Alias for type_code (read tools return this "
                                 "field as 'type', so both spellings work here)."
@@ -346,6 +377,24 @@ def run_server(store_path: Path | None = None) -> None:
                                 "3=critical (always loaded, applied in every session)"
                             ),
                             "default": 2,
+                        },
+                        "supersedes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Slugs of memories this one REPLACES (corrections, updated "
+                                "decisions, resolved incidents). Pass this instead of writing "
+                                "'CORRECTED:' prefixes or leaving stale duplicates — superseded "
+                                "memories stop surfacing in search/recall/resume automatically "
+                                "(history is preserved; remove the superseder and they return)."
+                            ),
+                        },
+                        "related": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Slugs of related memories (cross-references, not replacement)."
+                            ),
                         },
                     },
                     "required": ["slug", "rule"],
@@ -396,9 +445,13 @@ def run_server(store_path: Path | None = None) -> None:
             type_filter = arguments.get("type_filter")
             project_filter = arguments.get("project")
             fmt = arguments.get("format", "json")
+            include_superseded = bool(arguments.get("include_superseded", False))
             current_project = _detect_project()
 
             mnemonics = repo.list()
+            if not include_superseded:
+                from .links import filter_active
+                mnemonics = filter_active(mnemonics)
             if type_filter:
                 mnemonics = [m for m in mnemonics if m.type_code == type_filter]
             if project_filter:
@@ -457,7 +510,22 @@ def run_server(store_path: Path | None = None) -> None:
             if fmt == "toon":
                 text = serialize_mnemonic(m)
             else:
-                text = json.dumps(_mnem_to_dict(m, include_body=True), indent=2)
+                d = _mnem_to_dict(m, include_body=True)
+                if m.supersedes:
+                    d["supersedes"] = m.supersedes
+                if m.related:
+                    d["related"] = m.related
+                # Reading a retired chain link must be visible as such —
+                # otherwise the operator trusts stale state.
+                from .links import superseded_by, resolve_head
+                all_mems = repo.list()
+                heirs = superseded_by(slug, all_mems)
+                if heirs:
+                    d["superseded_by"] = heirs
+                    d["head"] = resolve_head(slug, all_mems)
+                    d["note"] = ("This memory has been SUPERSEDED — read 'head' "
+                                 "for the current version.")
+                text = json.dumps(d, indent=2)
 
             return [TextContent(type="text", text=text)]
 
@@ -475,11 +543,19 @@ def run_server(store_path: Path | None = None) -> None:
             if not mnemonics:
                 return [TextContent(type="text", text="No memories found.")]
 
+            # list is the audit surface: superseded memories stay visible,
+            # but marked, with their chain head named.
+            from .links import superseded_slugs, resolve_head
+            all_mems = repo.list()
+            hidden = superseded_slugs(all_mems)
+
             lines = [f"# {len(mnemonics)} memories"]
             for m in mnemonics:
                 rule_preview = m.rule[:80] + ".." if len(m.rule) > 80 else m.rule
                 proj = f" {m.project}" if m.project else ""
-                lines.append(f"{m.slug}\t[{m.type_code}p{m.priority}{proj}]\t{rule_preview}")
+                sup = (f" ⊘superseded-by:{resolve_head(m.slug, all_mems)}"
+                       if m.slug in hidden else "")
+                lines.append(f"{m.slug}\t[{m.type_code}p{m.priority}{proj}]{sup}\t{rule_preview}")
 
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -509,6 +585,11 @@ def run_server(store_path: Path | None = None) -> None:
             existing = repo.get(slug)
             now = datetime.now(timezone.utc)
 
+            from .links import validate_relations
+            sup_list, rel_list, warnings = validate_relations(
+                slug, arguments.get("supersedes"), arguments.get("related"),
+                repo.list())
+
             m = Mnemonic(
                 type_code=type_code,
                 slug=slug,
@@ -520,6 +601,8 @@ def run_server(store_path: Path | None = None) -> None:
                 when=when,
                 body=body,
                 project=project,
+                supersedes=sup_list,
+                related=rel_list,
             )
 
             repo.add(m)
@@ -534,18 +617,22 @@ def run_server(store_path: Path | None = None) -> None:
             )
 
             action = "updated" if existing else "saved"
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "status": "ok",
-                    "action": action,
-                    "slug": slug,
-                    "type": type_code,
-                    "priority": priority,
-                    "project": project,
-                    "checkpoint": (ck_sha or "")[:8] or None,
-                }, indent=2),
-            )]
+            out: dict[str, Any] = {
+                "status": "ok",
+                "action": action,
+                "slug": slug,
+                "type": type_code,
+                "priority": priority,
+                "project": project,
+                "checkpoint": (ck_sha or "")[:8] or None,
+            }
+            if sup_list:
+                out["supersedes"] = sup_list
+            if rel_list:
+                out["related"] = rel_list
+            if warnings:
+                out["warnings"] = warnings
+            return [TextContent(type="text", text=json.dumps(out, indent=2))]
 
         elif name == "get_checkpoint_log":
             limit = int(arguments.get("limit", 5))

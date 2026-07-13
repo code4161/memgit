@@ -471,6 +471,11 @@ class Repository:
                 thread, ck_sha, int(cached['count']) + 1,
                 cached.get('first_ts', format_ts(now)),
             )
+
+        # Rebuild the tag→count cache the context-recall hook reads. Done at
+        # commit time so the per-tool-call hook never has to load the store.
+        from .links import write_tagmap
+        write_tagmap(self)
         return ck_sha
 
     # ── History ───────────────────────────────────────────────────────────────
@@ -852,9 +857,14 @@ class Repository:
             'removed': sorted(s for s in committed if s not in index),
         }
 
-        # Recently updated memories (by mnemonic timestamp) + critical set
+        # Recently updated memories (by mnemonic timestamp) + critical set.
+        # Superseded memories are invisible here: resume is the trust surface,
+        # and a digest that shows retired state teaches the model to distrust
+        # the digest. The full (annotated) set stays on `list`.
         from .project import project_affinity
-        mnemonics = self.list()
+        from .links import filter_active, entity_index
+        all_mnemonics = self.list()
+        mnemonics = filter_active(all_mnemonics)
         by_recency = sorted(mnemonics, key=lambda m: m.timestamp, reverse=True)
         if project:
             # Exact workspace first, then the same project tree (a session in
@@ -909,6 +919,36 @@ class Repository:
             if m.type_code == 'co'
         ]
 
+        # Status board (type 'tr') — live entity state, one tracker per
+        # entity, updated by re-saving the same slug. memgit is the authority
+        # for these; files are downstream and may lag. Scoped like the recent
+        # pool (project tree + unscoped): a global tracker is global state.
+        if project:
+            tracker_pool = [m for m in mnemonics
+                            if not m.project
+                            or project_affinity(m.project, project) >= 1]
+        else:
+            tracker_pool = [m for m in mnemonics if not m.project]
+        trackers = [
+            {'slug': m.slug, 'rule': m.rule, 'timestamp': m.timestamp,
+             'tags': m.tags}
+            for m in sorted((m for m in tracker_pool if m.type_code == 'tr'),
+                            key=lambda m: m.timestamp, reverse=True)
+        ][:8]
+
+        # Entity index — tag→count depth advertisement. Counts are what turn
+        # a passive reader of this digest into an active search_memories
+        # caller (measured conversion without them: 6.8%).
+        topics = entity_index(mnemonics, project)
+
+        # A project with real history but no core guide: the only surface the
+        # model reliably reads is this digest, so the seed nudge lives here.
+        core_missing = bool(
+            project and not core and not project_is_new
+            and sum(1 for m in mnemonics
+                    if project_affinity(m.project, project) >= 1) >= 10
+        )
+
         count, first_ts = self.chain_info(thread)
         return {
             'thread': thread,
@@ -923,6 +963,9 @@ class Repository:
             'recent_memories': recent_mems,
             'critical_memories': critical,
             'core_memories': core,
+            'tracker_memories': trackers,
+            'entity_index': topics,
+            'core_missing': core_missing,
             'maintenance': self.maintenance_hint(count),
         }
 

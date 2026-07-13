@@ -152,9 +152,10 @@ def init(directory):
 @click.argument('slug')
 @click.argument('rule')
 @click.option('--type', '-t', 'type_code', default='fb',
-              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co']),
+              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co', 'tr']),
               help='fb=feedback us=user pj=project rf=reference cn=convention '
-                   'lx=lesson co=core (prefer `memgit core set` for co)')
+                   'lx=lesson co=core (prefer `memgit core set` for co) '
+                   'tr=tracker (live status of one entity; slug <entity>-status)')
 @click.option('--why', '-w', default=None, help='Reasoning / why this rule exists')
 @click.option('--when', '-W', default=None, help='When / where to apply')
 @click.option('--tags', default=None, help='Comma-separated tags')
@@ -165,7 +166,14 @@ def init(directory):
 @click.option('--project', '-P', default=None,
               help='Project this memory belongs to (default: derived from the '
                    'current directory; pass "" for a global memory)')
-def add(slug, rule, type_code, why, when, tags, priority, body, project):
+@click.option('--supersedes', default=None,
+              help='Comma-separated slugs this memory REPLACES (corrections, '
+                   'updated decisions) — superseded memories stop surfacing in '
+                   'search/recall/resume')
+@click.option('--related', default=None,
+              help='Comma-separated slugs of related memories')
+def add(slug, rule, type_code, why, when, tags, priority, body, project,
+        supersedes, related):
     """Add or update a mnemonic.
 
     SLUG  kebab-case identifier (e.g. ig-pipeline-no-fallback)\n
@@ -183,6 +191,12 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project):
     elif not project.strip():
         project = None
 
+    from .links import validate_relations
+    sup_list, rel_list, warnings = validate_relations(
+        slug, supersedes, related, repo.list())
+    for w in warnings:
+        err.print(f'[yellow]{w}[/yellow]')
+
     m = Mnemonic(
         type_code=type_code,
         slug=slug,
@@ -194,10 +208,13 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project):
         priority=priority,
         body=body,
         project=project,
+        supersedes=sup_list,
+        related=rel_list,
     )
     sha = repo.add(m)
     from rich.markup import escape as _mesc
-    console.print(f'[green]staged[/green]  {_mesc(m.slug)} {_mesc("[" + sha[:8] + "]")}')
+    sup_note = f'  supersedes {len(sup_list)}' if sup_list else ''
+    console.print(f'[green]staged[/green]  {_mesc(m.slug)} {_mesc("[" + sha[:8] + "]")}{sup_note}')
 
 
 # ── remove ────────────────────────────────────────────────────────────────────
@@ -540,6 +557,14 @@ def resume(checkpoints, recent, plain, fmt_json, project):
             console.print(f'  [red]removed[/red]  {s}')
         console.print()
 
+    if ctx.get('tracker_memories'):
+        console.print('[bold]Status board (live entity state):[/bold]')
+        for m in ctx['tracker_memories']:
+            ts = m['timestamp'].strftime('%m-%d')
+            rule = m['rule'][:80] + '..' if len(m['rule']) > 80 else m['rule']
+            console.print(f'  [red]●[/red] [cyan]{m["slug"]}[/cyan] [dim](upd {ts})[/dim] {rule}')
+        console.print()
+
     console.print('[bold]Last checkpoints:[/bold]')
     for ck in ctx['checkpoints']:
         ts = ck['timestamp'].strftime('%Y-%m-%d %H:%M')
@@ -557,6 +582,10 @@ def resume(checkpoints, recent, plain, fmt_json, project):
         console.print('\n[bold red]Critical rules (always apply):[/bold red]')
         for m in ctx['critical_memories']:
             console.print(f'  [red]![/red] [cyan]{m["slug"]}[/cyan]  {m["rule"]}')
+    if ctx.get('entity_index'):
+        idx = ' · '.join(f'{tag} ({n})' for tag, n in ctx['entity_index'])
+        console.print(f'\n[bold]Memory index:[/bold] {idx}  '
+                      f'[dim](memgit search "<topic>")[/dim]')
     if ctx.get('maintenance'):
         console.print(f'\n[yellow]maintenance:[/yellow] {ctx["maintenance"]}')
     console.print()
@@ -589,6 +618,19 @@ def _format_resume_plain(ctx: dict) -> str:
             body = (m.get('body') or m['rule']).rstrip()
             lines.append('')
             lines.append(body)
+    # Status board: live entity state. Rendered right after the guide because
+    # orientation ("what is the CURRENT state of things") is worth more than
+    # history. The freshness stamp is what tells the model to trust or
+    # re-verify a line.
+    if ctx.get('tracker_memories'):
+        lines.append('')
+        lines.append('## Status board — live entity state '
+                     '(memgit is authoritative; files may lag)')
+        for m in ctx['tracker_memories']:
+            ts = m['timestamp'].strftime('%m-%d')
+            lines.append(f'- {m["slug"]} (upd {ts}): {clip(m["rule"], 160)}')
+        lines.append('(State changed? Update the tracker: save_memory with the '
+                     'same slug.)')
     st = ctx['staged']
     if st['new'] or st['updated'] or st['removed']:
         lines.append('')
@@ -634,9 +676,26 @@ def _format_resume_plain(ctx: dict) -> str:
             'digest + seeding brief, then save 10-20 durable facts '
             '(purpose, architecture, conventions, state, gotchas) via save_memory.'
         )
+    if ctx.get('core_missing'):
+        lines.append('')
+        lines.append(
+            '(No core operating guide for this project yet — seed it once: '
+            '`memgit core seed`, review with `memgit core show`, then '
+            '`memgit core sync` to deliver it to every AI tool.)'
+        )
+    # Entity index LAST: recency position is where a model decides its next
+    # action, and this section exists purely to convert reading into querying.
+    if ctx.get('entity_index'):
+        lines.append('')
+        lines.append('## Memory index — depth beyond this digest')
+        lines.append('- ' + ' · '.join(f'{tag} ({n})'
+                                       for tag, n in ctx['entity_index']))
+        lines.append('(each is one call away: search_memories("<topic>", top_k=10))')
     lines.append('')
-    lines.append('(Check work-in-flight and the last checkpoints before assuming state; '
-                 'use memgit search for anything task-specific.)')
+    lines.append('(This digest is a teaser, not the memory. Trust the status board '
+                 'over files for entity state; check work-in-flight and the last '
+                 'checkpoints before assuming state. Anything deeper: '
+                 'search_memories("<topic from the index above>").)')
     return '\n'.join(lines)
 
 
@@ -661,6 +720,13 @@ def hook_stop_guard():
     sys.exit(stop_guard())
 
 
+@hook.command('context-recall')
+def hook_context_recall():
+    """PostToolUse: hint when memories exist about the file being read (stdin JSON)."""
+    from .hooks import context_recall
+    sys.exit(context_recall())
+
+
 # ── onboard ───────────────────────────────────────────────────────────────────
 
 ONBOARD_BRIEF = """\
@@ -683,6 +749,9 @@ Extract 10–20 DURABLE facts about this project and save each one as a memory
 - `rf` reference: key entry points, dashboards, external services, URLs
 - `fb` feedback: known constraints ("never touch X", "Y is production")
 - `lx` lesson: past incidents or gotchas documented in the repo
+- `tr` tracker: LIVE status of each in-flight entity (a deploy, a migration,
+  a draft) — slug `<entity>-status`; update it by re-saving the same slug.
+  memgit is the authority for this status; files may lag.
 
 Rules for good memories: one fact per memory; kebab-case slug; a one-line
 `rule` stating the fact; details in `body`; set `project` to "{project}";
@@ -936,21 +1005,31 @@ def show(slug, toon, fmt_markdown):
             console.print(f'[dim]Related: {_mesc(", ".join(m.related))}[/dim]')
         if m.supersedes:
             console.print(f'[dim]Supersedes: {_mesc(", ".join(m.supersedes))}[/dim]')
+        from .links import superseded_by, resolve_head
+        all_mems = repo.list()
+        heirs = superseded_by(m.slug, all_mems)
+        if heirs:
+            head = resolve_head(m.slug, all_mems)
+            console.print(f'[yellow]⊘ SUPERSEDED by: {_mesc(", ".join(heirs))}'
+                          f' — current head: {_mesc(head)}[/yellow]')
 
 
 # ── list ──────────────────────────────────────────────────────────────────────
 
 @cli.command(name='list')
 @click.option('--type', '-t', 'type_filter', default=None,
-              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx']),
+              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co', 'tr']),
               help='Filter by type')
 @click.option('--priority', '-p', default=None, type=click.IntRange(1, 3), help='Filter by priority')
 @click.option('--project', '-P', 'project_filter', default=None, help='Filter by project')
 @click.option('--toon', is_flag=True, help='Show TOON format')
 def list_cmd(type_filter, priority, project_filter, toon):
-    """List all mnemonics in the current thread."""
+    """List all mnemonics in the current thread (the audit view — superseded
+    memories are shown, marked ⊘)."""
+    from .links import superseded_slugs
     repo = _require_repo()
     mnemonics = repo.list()
+    hidden = superseded_slugs(mnemonics)
     if type_filter:
         mnemonics = [m for m in mnemonics if m.type_code == type_filter]
     if priority:
@@ -980,10 +1059,14 @@ def list_cmd(type_filter, priority, project_filter, toon):
         p_str = '!' if m.priority == 3 else str(m.priority)
         proj = (m.project or '')[:18]
         rule_preview = m.rule[:58] + '..' if len(m.rule) > 58 else m.rule
+        if m.slug in hidden:
+            rule_preview = '⊘ ' + rule_preview
         table.add_row(m.slug, m.type_code, p_str, proj, rule_preview)
 
     console.print(table)
-    console.print(f'\n[dim]{len(mnemonics)} mnemonic{"s" if len(mnemonics) != 1 else ""}[/dim]')
+    shown_hidden = sum(1 for m in mnemonics if m.slug in hidden)
+    hid_note = f' · {shown_hidden} superseded (⊘)' if shown_hidden else ''
+    console.print(f'\n[dim]{len(mnemonics)} mnemonic{"s" if len(mnemonics) != 1 else ""}{hid_note}[/dim]')
 
 
 # ── import ────────────────────────────────────────────────────────────────────
@@ -1183,11 +1266,15 @@ import re  # noqa: E402 — needed for lint command
 @click.option('--toon', is_flag=True, help='Output TOON format (token-efficient)')
 @click.option('--json', 'fmt_json', is_flag=True, help='Output JSON')
 @click.option('--type', '-t', 'type_filter', default=None,
-              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx']),
+              type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co', 'tr']),
               help='Filter by type before scoring')
 @click.option('--project', '-P', 'project_filter', default=None,
               help='Only memories from this project (as shown in `memgit list`)')
-def search(query, top, toon, fmt_json, type_filter, project_filter):
+@click.option('--include-superseded', is_flag=True,
+              help='Also score memories that a newer memory supersedes '
+                   '(hidden by default)')
+def search(query, top, toon, fmt_json, type_filter, project_filter,
+           include_superseded):
     """Search memories by relevance.
 
     Returns the top-k mnemonics scored against QUERY using BM25.
@@ -1197,6 +1284,9 @@ def search(query, top, toon, fmt_json, type_filter, project_filter):
 
     repo = _require_repo()
     mnemonics = repo.list()
+    if not include_superseded:
+        from .links import filter_active
+        mnemonics = filter_active(mnemonics)
     if type_filter:
         mnemonics = [m for m in mnemonics if m.type_code == type_filter]
     if project_filter:
@@ -1359,7 +1449,7 @@ def graph(output, auto_open):
     """Generate an interactive HTML graph of the memory store.
 
     Visualizes all mnemonics as a force-directed graph with:
-      - Nodes colored by type (fb/us/pj/rf/cn/lx)
+      - Nodes colored by type (fb/us/pj/rf/cn/lx/co/tr)
       - Node size by priority
       - Edges from [[wikilink]] references and explicit related/supersedes links
       - Filter by type, search by keyword, click to highlight neighbours
@@ -1468,7 +1558,8 @@ def stats(fmt_json):
         return
 
     type_labels = {'fb': 'feedback', 'us': 'user', 'pj': 'project',
-                   'rf': 'reference', 'cn': 'convention', 'lx': 'lesson'}
+                   'rf': 'reference', 'cn': 'convention', 'lx': 'lesson',
+                   'co': 'core', 'tr': 'tracker'}
 
     type_str = ' · '.join(
         f"{s['by_type'].get(tc, 0)} {lbl}"
@@ -2245,7 +2336,8 @@ def setup_gemini_cli(dry_run):
 
 
 #: substrings identifying a hook command as one of ours (any generation)
-_MEMGIT_HOOK_SIGNS = ('resume --plain', 'hook prompt-recall', 'hook stop-guard', ' sync')
+_MEMGIT_HOOK_SIGNS = ('resume --plain', 'hook prompt-recall', 'hook stop-guard',
+                      'hook context-recall', ' sync')
 
 
 def _is_memgit_hook_entry(h: dict) -> bool:
@@ -2262,19 +2354,25 @@ def _is_memgit_hook_entry(h: dict) -> bool:
               help='Skip the per-prompt auto-recall hook (UserPromptSubmit)')
 @click.option('--no-guard', is_flag=True,
               help='Skip the end-of-session capture guard (Stop)')
+@click.option('--no-ctx-recall', is_flag=True,
+              help='Skip the context-recall hook (PostToolUse on Read/Grep/Glob)')
 @click.option('--dry-run', is_flag=True, help='Show the change without writing')
-def setup_hooks(remove, no_recall, no_guard, dry_run):
+def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
     """Install the Claude Code hooks that make memory automatic.
 
-    Four hooks, one principle: what a hook enforces happens, what a tool
+    Five hooks, one principle: what a hook enforces happens, what a tool
     description suggests mostly doesn't (measured: 6% voluntary engagement
     vs 100% hook delivery).
 
     \b
-      SessionStart      inject `memgit resume` — last checkpoints, work in
-                        flight, critical rules
+      SessionStart      inject `memgit resume` — status board, last
+                        checkpoints, work in flight, critical rules,
+                        memory index
       UserPromptSubmit  inject memories relevant to each prompt (BM25,
                         silent when nothing clears the relevance bar)
+      PostToolUse       context recall — reading a file whose path matches
+                        a memory tag surfaces a one-line depth hint
+                        (tagmap cache only, capped 3/session)
       Stop              capture guard — a substantive session ending with
                         zero memory writes gets ONE nudge to save durable
                         facts; plus async `memgit sync` to checkpoint
@@ -2313,6 +2411,10 @@ def setup_hooks(remove, no_recall, no_guard, dry_run):
             {'type': 'command',
              'command': f'{base} hook prompt-recall 2>/dev/null || true'},
         ],
+        'PostToolUse': [] if no_ctx_recall else [
+            {'type': 'command',
+             'command': f'{base} hook context-recall 2>/dev/null || true'},
+        ],
         'Stop': ([] if no_guard else [
             {'type': 'command',
              'command': f'{base} hook stop-guard 2>/dev/null || true'},
@@ -2322,14 +2424,20 @@ def setup_hooks(remove, no_recall, no_guard, dry_run):
              'async': True},
         ],
     }
+    #: PostToolUse fires per tool call — matcher limits it to the file-reading
+    #: tools so the hook binary isn't spawned on every Bash/Edit.
+    _MATCHERS = {'PostToolUse': 'Read|Grep|Glob'}
 
     changed = []
-    for event in ('SessionStart', 'UserPromptSubmit', 'Stop'):
+    for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'):
         entries = hooks.setdefault(event, [])
         had = [h for h in entries if isinstance(h, dict) and _is_memgit_hook_entry(h)]
         entries[:] = [h for h in entries if h not in had]
         if not remove and plan[event]:
-            entries.append({'hooks': plan[event]})
+            entry: dict = {'hooks': plan[event]}
+            if event in _MATCHERS:
+                entry['matcher'] = _MATCHERS[event]
+            entries.append(entry)
             changed.append(event)
         if not entries:
             hooks.pop(event, None)
@@ -2349,7 +2457,7 @@ def setup_hooks(remove, no_recall, no_guard, dry_run):
             tag = ' [dim](async)[/dim]' if inner.get('async') else ''
             console.print(f'  [cyan]{event}[/cyan]  [dim]{inner["command"]}[/dim]{tag}')
     console.print('[dim]Resume at session start, relevant memories per prompt, '
-                  'capture guard + sync at stop.[/dim]')
+                  'context hints on file reads, capture guard + sync at stop.[/dim]')
 
 
 @setup.command('print-config')

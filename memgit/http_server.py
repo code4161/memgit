@@ -195,6 +195,9 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 return
 
             mnemonics = repo.list()
+            if not body.get("include_superseded"):
+                from .links import filter_active
+                mnemonics = filter_active(mnemonics)
             if type_filter:
                 mnemonics = [m for m in mnemonics if m.type_code == type_filter]
 
@@ -223,6 +226,9 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 return
 
             existing = repo.get(slug)
+            from .links import validate_relations
+            sup_list, rel_list, warnings = validate_relations(
+                slug, body.get("supersedes"), body.get("related"), repo.list())
             mem = Mnemonic(
                 type_code=body.get("type_code", "fb"),
                 slug=slug,
@@ -232,10 +238,16 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 tags=body.get("tags", []),
                 why=body.get("why"),
                 when=body.get("when"),
+                body=body.get("body"),
+                supersedes=sup_list,
+                related=rel_list,
             )
             repo.add(mem)
             action = "updated" if existing else "saved"
-            self._json_response({"status": "ok", "action": action, "slug": slug})
+            out = {"status": "ok", "action": action, "slug": slug}
+            if warnings:
+                out["warnings"] = warnings
+            self._json_response(out)
             return
 
         self._error(f"Not found: {path}", 404)

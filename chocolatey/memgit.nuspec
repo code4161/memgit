@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>memgit</id>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
     <packageSourceUrl>https://github.com/code4161/memgit</packageSourceUrl>
     <owners>code4161</owners>
     <title>memgit (Git for AI Memory)</title>

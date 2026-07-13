@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-245%20passing-brightgreen)](tests/)
 
 ---
 
@@ -181,13 +181,14 @@ memgit resume --json     # for tooling
 Wire it into Claude Code so memory becomes **automatic** — no tool call, no judgment required:
 
 ```bash
-memgit setup hooks       # installs all four hooks (~/.claude/settings.json)
+memgit setup hooks       # installs all five hooks (~/.claude/settings.json)
 ```
 
 | Hook | What it enforces |
 |---|---|
-| `SessionStart` | every session opens with the resume digest in context |
-| `UserPromptSubmit` | each prompt is BM25-matched against the store; relevant memories are injected (silent when nothing clears the relevance bar; never repeats within a session) — `--no-recall` to skip |
+| `SessionStart` | every session opens with the resume digest in context — status board, checkpoints, critical rules, memory index |
+| `UserPromptSubmit` | each prompt is BM25-matched against the store; relevant memories are injected, ending with a "+N more on '<topic>'" depth hint when more exists (silent when nothing clears the relevance bar; never repeats within a session) — `--no-recall` to skip |
+| `PostToolUse` | reading a file whose path matches a memory tag surfaces a one-line hint ("6 memories tagged 'x' relate to this path") — tagmap cache only, capped 3/session, `--no-ctx-recall` to skip |
 | `Stop` (guard) | a session that did real work but saved nothing gets ONE nudge to save durable facts before finishing — `--no-guard` to skip |
 | `Stop` (sync) | markdown memories are checkpointed asynchronously at session end |
 
@@ -260,13 +261,25 @@ And it **learns**: a sidecar usage ledger tracks which memories actually get rec
 
 ---
 
+## Depth advertisement, trackers & supersession (v0.6.0)
+
+Measured across 289 real sessions: injected recall reached ~59% of them, but only **6.8%** ever ran an active search — the injected top-3 reads as "memory consulted", so the model never learns there's a queryable store behind it. 0.6.0 makes the passive layer advertise what the active layer knows:
+
+- **Memory index** — the resume digest ends with tag→count pairs (`8a8f4ec (6) · instagram (5)`) and the exact call to go deeper. Counts are truthful: superseded memories are excluded, and every advertised topic is guaranteed to return search results.
+- **"+N more" recall hints** — when the per-prompt recall block has more on-topic memories behind it, it says so, with the one call to get them.
+- **Context-triggered recall** — a `PostToolUse` hook: reading a file whose path matches a memory tag surfaces `memgit: 6 memories tagged 'x' relate to this path`. Reads only a commit-time tagmap cache (never the store), capped 3/session.
+- **Trackers (`tr`)** — one memory per in-flight entity (`<entity>-status`), updated by re-saving the same slug. They render as a **status board** at the top of every session: memgit is the authority for entity status; files may lag.
+- **Supersession** — a correction names what it replaces (`supersedes=[old-slug]`) instead of a "CORRECTED:" prefix. Superseded memories vanish from search/recall/resume (history preserved; `list` still shows them marked ⊘), so injected context is never stale.
+
+---
+
 ## Commands
 
 ```bash
 # Core (git-like)
 memgit init                       # initialize store (auto-detects best path)
 memgit onboard                    # bootstrap brief for an existing codebase
-memgit add <slug> <rule>          # stage a memory (--body for full detail, --project to scope)
+memgit add <slug> <rule>          # stage a memory (--body detail, --project scope, --supersedes old-slug)
 memgit commit -m "message"        # checkpoint current state
 memgit log                        # history
 memgit diff [sha1] [sha2]         # what changed
@@ -398,7 +411,7 @@ git clone https://github.com/code4161/memgit.git
 cd memgit
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest    # 160 tests, all passing, < 3 seconds
+pytest    # 245 tests, all passing, < 5 seconds
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

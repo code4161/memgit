@@ -122,13 +122,29 @@ def _upsert_marker_block(existing: str, block_body: str) -> str:
 # ── seed: ingest existing host skills/rules into a draft core guide ───────────
 
 def _frontmatter_field(text: str, key: str) -> Optional[str]:
-    """Pull a top-level `key: value` from a leading `---` YAML frontmatter."""
+    """Pull a top-level `key: value` from a leading `---` YAML frontmatter.
+
+    Handles folded/literal block scalars (`key: >` / `key: |`): the value is
+    the first indented line that follows — one line is enough for a routing
+    entry, and a real YAML parser is not worth the dependency here.
+    """
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
     block = text[3:end] if end != -1 else text[3:]
-    m = re.search(rf"^{re.escape(key)}:\s*(.+)$", block, flags=re.M)
-    return m.group(1).strip().strip('"\'') if m else None
+    m = re.search(rf"^{re.escape(key)}:\s*(.*)$", block, flags=re.M)
+    if not m:
+        return None
+    value = m.group(1).strip().strip('"\'')
+    if value in (">", "|", ">-", "|-", ""):
+        tail = block[m.end():]
+        for line in tail.splitlines():
+            if line.strip() and line[:1] in (" ", "\t"):
+                return line.strip()
+            if line.strip():  # next top-level key — no scalar body
+                break
+        return None
+    return value
 
 
 #: (label, glob) pairs — where each host keeps model-invoked skills.
@@ -173,7 +189,13 @@ def build_seed(root: Path, home: Optional[Path] = None) -> str:
         "## memgit",
         "- Before answering anything that depends on past work, call resume/search "
         "(memgit) — the record of prior sessions lives there, not in this file.",
-        "- Save durable facts/decisions/lessons as you learn them.",
+        "- memgit is the authority for entity STATUS ('tr' tracker memories: "
+        "deploys, drafts, migrations, campaigns); files and READMEs are "
+        "downstream and may lag. Changed an entity's state? Update its "
+        "<entity>-status tracker (save, same slug).",
+        "- Save durable facts/decisions/lessons as you learn them. A memory "
+        "that corrects an old one should supersede it (supersedes=[old-slug]), "
+        "not sit beside it.",
     ]
 
     skills = collect_skills(root, home)
@@ -235,10 +257,17 @@ def compute_auto_section(repo, project, now, curated: str = "") -> str:
     if not usage:
         return ""
     candidates = []
-    for m in repo.list():
+    from .links import superseded_slugs
+    all_mems = repo.list()
+    hidden = superseded_slugs(all_mems)
+    for m in all_mems:
         if m.type_code in ("co", "cn"):        # skip core + conventions (rules)
             continue
+        if m.type_code == "tr":                # skip trackers — live state must
+            continue                           # never fossilize in static files
         if m.priority == 3:                    # skip always-on criticals (rules)
+            continue
+        if m.slug in hidden:                   # skip superseded (stale by definition)
             continue
         if project and project_affinity(m.project, project) < 1:
             continue

@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "memgit Memory API",
-    "description": "Version-controlled persistent memory store for AI assistants. Stores facts, rules, preferences, and lessons learned across sessions. Use search_memories at the start of every session to retrieve relevant context. Use save_memory whenever you learn something worth remembering for future sessions.",
-    "version": "0.1.0"
+    "description": "Version-controlled persistent memory store for AI assistants. Stores facts, rules, preferences, and lessons learned across sessions. Use search_memories at the start of every session to retrieve relevant context. Use save_memory whenever you learn something worth remembering for future sessions. memgit is the authority for entity STATUS (tr tracker memories); files are downstream. When a memory corrects an old one, pass supersedes=[old-slug] \u2014 superseded memories are hidden from search by default.",
+    "version": "0.6.0"
   },
   "servers": [
     {
@@ -45,9 +45,16 @@
                       "pj",
                       "rf",
                       "cn",
-                      "lx"
+                      "lx",
+                      "co",
+                      "tr"
                     ],
-                    "description": "fb=feedback (corrections, preferences), us=user profile (role, goals), pj=project (active work, decisions), rf=reference (pointers to external systems), cn=convention (code/architecture rules), lx=lesson (post-mortems, 'we got burned by X')"
+                    "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
+                  },
+                  "include_superseded": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also score memories that a newer memory supersedes (hidden by default)."
                   }
                 }
               }
@@ -140,10 +147,12 @@
                       "pj",
                       "rf",
                       "cn",
-                      "lx"
+                      "lx",
+                      "co",
+                      "tr"
                     ],
                     "default": "fb",
-                    "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+                    "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
                   },
                   "why": {
                     "type": "string",
@@ -169,6 +178,24 @@
                     ],
                     "default": 2,
                     "description": "1=low (background context), 2=medium (apply when relevant), 3=critical (always loaded)"
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Full long-form detail behind the rule \u2014 stored losslessly."
+                  },
+                  "supersedes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Slugs of memories this one REPLACES (corrections, updated decisions). Superseded memories stop surfacing in search automatically."
+                  },
+                  "related": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Slugs of related memories (cross-reference, not replacement)."
                   }
                 }
               }
@@ -198,6 +225,13 @@
                     },
                     "slug": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Per-edge relation problems (unknown slug kept, cycle edge dropped)."
                     }
                   }
                 }
@@ -224,7 +258,9 @@
                 "pj",
                 "rf",
                 "cn",
-                "lx"
+                "lx",
+                "co",
+                "tr"
               ]
             },
             "description": "Filter by type: fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
@@ -386,9 +422,11 @@
               "pj",
               "rf",
               "cn",
-              "lx"
+              "lx",
+              "co",
+              "tr"
             ],
-            "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson"
+            "description": "fb=feedback, us=user, pj=project, rf=reference, cn=convention, lx=lesson, co=core (per-project operating guide), tr=tracker (LIVE status of one entity, slug '<entity>-status', updated by re-saving the same slug; memgit is the authority for this status, files are downstream)"
           },
           "priority": {
             "type": "integer",
@@ -420,6 +458,19 @@
           "score": {
             "type": "number",
             "description": "BM25 relevance score (only present in search results)"
+          },
+          "supersedes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Slugs this memory replaces"
+          },
+          "related": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

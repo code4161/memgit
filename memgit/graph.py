@@ -17,6 +17,8 @@ _TYPE_COLOR = {
     "rf": "#8b5cf6",  # violet   — reference
     "cn": "#eab308",  # yellow   — convention
     "lx": "#ec4899",  # pink     — lesson
+    "co": "#64748b",  # slate    — core guide
+    "tr": "#ef4444",  # red      — tracker (live status)
 }
 _TYPE_LABEL = {
     "fb": "feedback",
@@ -25,6 +27,8 @@ _TYPE_LABEL = {
     "rf": "reference",
     "cn": "convention",
     "lx": "lesson",
+    "co": "core",
+    "tr": "tracker",
 }
 
 _WIKILINK_RE = re.compile(r'\[\[([a-z0-9_-]+)\]\]', re.IGNORECASE)
@@ -372,7 +376,7 @@ window.addEventListener('resize', () => {
 const tooltip = document.getElementById('tooltip');
 
 node.on('mouseover', (event, d) => {
-  const tags = d.tags.filter(t => !['fb','pj','us','rf','cn','lx'].includes(t));
+  const tags = d.tags.filter(t => !['fb','pj','us','rf','cn','lx','co','tr'].includes(t));
   tooltip.innerHTML = `
     <div class="t-slug">${d.id}</div>
     <div class="t-type">[${d.type}] ${d.type_label} · priority ${d.priority}</div>
