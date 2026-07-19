@@ -76,14 +76,22 @@ class TestStats:
         s = repo_with_memories.stats()
         assert s['full_tokens'] > 0
 
-    def test_stats_search_fewer_than_full(self, repo_with_memories):
+    def test_stats_injected_fewer_than_full(self, repo_with_memories):
         s = repo_with_memories.stats()
-        # Search top-8 should cost less than full load of 10
-        assert s['avg_search_tokens'] <= s['full_tokens']
+        # The measured resume digest + estimated recall block is the real
+        # per-session injection — it must undercut loading the whole store.
+        assert s['resume_digest_tokens'] > 0
+        assert s['recall_block_tokens_est'] >= 0
+        assert (s['injected_per_session_tokens_est']
+                == s['resume_digest_tokens'] + s['recall_block_tokens_est'])
 
-    def test_stats_reduction_percent(self, repo_with_memories):
+    def test_stats_has_no_fabricated_savings(self, repo_with_memories):
+        """0.7.0 removed the invented figures: no simulated search mix, no
+        sessions-per-week extrapolation, no model pricing."""
         s = repo_with_memories.stats()
-        assert 0 <= s['reduction_pct'] <= 100
+        for key in ('avg_search_tokens', 'reduction_pct',
+                    'weekly_savings_tokens', 'weekly_savings_usd'):
+            assert key not in s
 
     def test_stats_checkpoint_count(self, repo_with_memories):
         s = repo_with_memories.stats()

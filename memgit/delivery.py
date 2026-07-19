@@ -18,7 +18,10 @@ Surfaces are the current, verified ones (see plan Phase 0 research):
   Cline       : .clinerules/memgit.md
   Roo Code    : .roo/rules/memgit.md
   Continue    : .continue/rules/memgit.md    (alwaysApply: true)
-  Gemini CLI  : .gemini/memgit.md            (note: add to context.fileName)
+  Gemini CLI  : GEMINI.md                     marker-block [32k cap, shared]
+                (Gemini CLI only auto-loads GEMINI.md; the pre-0.7.0
+                 dedicated `.gemini/memgit.md` was INERT — nothing set
+                 context.fileName — and is deleted on sync)
   Codex       : AGENTS.md                     marker-block [32k cap, shared]
 """
 from __future__ import annotations
@@ -87,10 +90,18 @@ TARGETS: list[Target] = [
     Target("Cline", ".clinerules/memgit.md", _render_plain, [".clinerules"]),
     Target("Roo Code", ".roo/rules/memgit.md", _render_plain, [".roo", ".roorules"]),
     Target("Continue.dev", ".continue/rules/memgit.md", _render_continue, [".continue"]),
-    Target("Gemini CLI", ".gemini/memgit.md", _render_plain, [".gemini", "GEMINI.md"]),
+    # Gemini CLI auto-loads ONLY GEMINI.md (no context.fileName is ever set
+    # for it), so like Codex it gets a marker-delimited block in the shared
+    # file — created if the project shows Gemini usage, user content intact.
+    Target("Gemini CLI", "GEMINI.md", _render_plain, [".gemini", "GEMINI.md"],
+           dedicated=False, cap=32000),
     Target("Codex", "AGENTS.md", _render_plain, [".codex", "AGENTS.md"],
            dedicated=False, cap=32000),
 ]
+
+#: Dedicated files delivered by older releases that turned out to be inert —
+#: removed on every sync so stale artifacts don't linger in user repos.
+LEGACY_TARGET_FILES = [".gemini/memgit.md"]
 
 TARGETS_BY_LABEL = {t.label: t for t in TARGETS}
 
@@ -124,9 +135,12 @@ def _upsert_marker_block(existing: str, block_body: str) -> str:
 def _frontmatter_field(text: str, key: str) -> Optional[str]:
     """Pull a top-level `key: value` from a leading `---` YAML frontmatter.
 
-    Handles folded/literal block scalars (`key: >` / `key: |`): the value is
-    the first indented line that follows — one line is enough for a routing
-    entry, and a real YAML parser is not worth the dependency here.
+    Handles folded/literal block scalars (`key: >`, `>-`, `|`, `|-`) and
+    plain multi-line values: every continuation (indented) line up to the
+    next top-level key is joined into one sentence — a seeded skill
+    description must not be truncated mid-sentence, nor lost entirely when
+    none of it sits on the key's own line. A real YAML parser is not worth
+    the dependency here.
     """
     if not text.startswith("---"):
         return None
@@ -135,16 +149,18 @@ def _frontmatter_field(text: str, key: str) -> Optional[str]:
     m = re.search(rf"^{re.escape(key)}:\s*(.*)$", block, flags=re.M)
     if not m:
         return None
-    value = m.group(1).strip().strip('"\'')
-    if value in (">", "|", ">-", "|-", ""):
-        tail = block[m.end():]
-        for line in tail.splitlines():
-            if line.strip() and line[:1] in (" ", "\t"):
-                return line.strip()
-            if line.strip():  # next top-level key — no scalar body
-                break
-        return None
-    return value
+    first = m.group(1).strip()
+    parts: list[str] = []
+    if first not in (">", "|", ">-", "|-", ">+", "|+", ""):
+        parts.append(first.strip('"\''))
+    for line in block[m.end():].splitlines():
+        if not line.strip():
+            continue  # blank line (paragraph break inside a block scalar)
+        if line[:1] not in (" ", "\t"):
+            break     # next top-level key
+        parts.append(line.strip())
+    value = " ".join(p for p in parts if p).strip()
+    return value or None
 
 
 #: (label, glob) pairs — where each host keeps model-invoked skills.
@@ -339,6 +355,16 @@ def deliver(root: Path, body: str, hosts: Optional[list[str]] = None,
     only_existing=True → update just the host files that already exist (used by
     the auto-refresh path, so a background sync never creates new host files).
     """
+    # Clean up inert artifacts from older releases (e.g. `.gemini/memgit.md`,
+    # which Gemini CLI never loaded) — memgit owns these filenames outright,
+    # so deleting is safe.
+    if not dry_run:
+        for rel in LEGACY_TARGET_FILES:
+            try:
+                (root / rel).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     results: list[DeliveryResult] = []
     for t in TARGETS:
         if hosts is not None:

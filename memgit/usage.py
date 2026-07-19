@@ -48,6 +48,22 @@ def record_hits(repo, slugs: Iterable[str], now: Optional[datetime] = None) -> N
         pass
 
 
+def prune_usage(repo, slugs: Iterable[str]) -> list[str]:
+    """Remove named slugs from the ledger (e.g. entries for deleted memories).
+    Returns the slugs actually removed."""
+    slugs = [s for s in slugs if s]
+    if not slugs:
+        return []
+    try:
+        data = read_usage(repo)
+        removed = [s for s in slugs if data.pop(s, None) is not None]
+        if removed:
+            _path(repo).write_text(json.dumps(data), encoding="utf-8")
+        return removed
+    except OSError:
+        return []
+
+
 def reset_usage(repo) -> None:
     """Wipe the ledger — used by `core heal` when the signal looks corrupted."""
     try:

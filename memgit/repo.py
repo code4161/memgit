@@ -19,7 +19,16 @@ from .store import ObjectStore
 
 
 def default_store_candidates() -> list[Path]:
-    """Well-known store locations, in the same order `memgit init` auto-detects."""
+    """Well-known store locations, in the same order `memgit init` auto-detects.
+
+    MEMGIT_STORE overrides everything: when set it is the ONLY candidate —
+    an explicit store must never silently fall back to a different one
+    (tests point it at a tmp dir precisely so they can never touch the
+    live store).
+    """
+    env = os.environ.get('MEMGIT_STORE', '').strip()
+    if env:
+        return [Path(env).expanduser()]
     home = Path.home()
     return [
         home / '.claude' / 'memgit-store',
@@ -832,8 +841,19 @@ class Repository:
         thread = self.current_thread()
         head = self.head_sha()
 
-        # Recent checkpoint history
-        cks = self.log(limit=checkpoints)
+        from .project import project_affinity
+        from .links import filter_active, entity_index
+        all_mnemonics = self.list()
+
+        # Recent checkpoint history — scoped like everything else in this
+        # digest: a session in project A must not open with project B's
+        # commit log. A checkpoint stays iff any slug it touched (diff
+        # summary, or its `save: <slug>` message) resolves via the CURRENT
+        # index to a family-or-global memory; checkpoints whose resolvable
+        # slugs are all foreign — and, with a project set, checkpoints where
+        # nothing resolves at all (bulk syncs of removed slugs, empty roots)
+        # — are dropped. With no project the list is unfiltered, as before.
+        cks = self._scoped_checkpoints(checkpoints, project, all_mnemonics)
         ck_list = []
         for ck in cks:
             d = ck.diff_summary
@@ -861,9 +881,6 @@ class Repository:
         # Superseded memories are invisible here: resume is the trust surface,
         # and a digest that shows retired state teaches the model to distrust
         # the digest. The full (annotated) set stays on `list`.
-        from .project import project_affinity
-        from .links import filter_active, entity_index
-        all_mnemonics = self.list()
         mnemonics = filter_active(all_mnemonics)
         by_recency = sorted(mnemonics, key=lambda m: m.timestamp, reverse=True)
         if project:
@@ -968,6 +985,45 @@ class Repository:
             'core_missing': core_missing,
             'maintenance': self.maintenance_hint(count),
         }
+
+    def _scoped_checkpoints(self, checkpoints: int,
+                            project: Optional[str],
+                            all_mnemonics: list[Mnemonic]) -> list[Checkpoint]:
+        """The checkpoint list for the resume digest, project-scoped.
+
+        With no project: the newest `checkpoints`, unchanged behavior. With
+        a project: scan a larger window (checkpoints*6) newest-first and keep
+        a checkpoint iff any slug it touched — diff_summary added/modified/
+        removed, or the `save: <slug>` message pattern — resolves via the
+        current index to a memory that is family-of-project or explicitly
+        global. Slugs that no longer resolve say nothing about the project,
+        so a checkpoint with only foreign or only unresolvable slugs is
+        dropped rather than leaked. Returns the first `checkpoints`
+        survivors.
+        """
+        if not project:
+            return self.log(limit=checkpoints)
+
+        import re as _re
+        from .project import same_project_family
+        by_slug = {m.slug: m for m in all_mnemonics}
+        kept: list[Checkpoint] = []
+        for ck in self.log(limit=checkpoints * 6):
+            slugs: set[str] = set()
+            d = ck.diff_summary
+            if d:
+                slugs.update(d.added, d.modified, d.removed)
+            m = _re.match(r'save:\s+(\S+)', ck.message or '')
+            if m:
+                slugs.add(m.group(1))
+            resolvable = [by_slug[s] for s in slugs if s in by_slug]
+            if any(mm.project is None
+                   or same_project_family(mm.project, project)
+                   for mm in resolvable):
+                kept.append(ck)
+                if len(kept) >= checkpoints:
+                    break
+        return kept
 
     #: Above this many checkpoints, surface a maintenance hint in resume/status.
     MAINTENANCE_CHECKPOINTS = 500
@@ -1090,6 +1146,8 @@ class Repository:
                         if not dry_run:
                             lf.write_text('\n'.join(kept) + ('\n' if kept else ''))
 
+        cache_deleted = self.gc_caches(dry_run=dry_run)
+
         return {
             'objects_before': objects_before,
             'objects_deleted': deleted,
@@ -1097,8 +1155,47 @@ class Repository:
             'bytes_before': bytes_before,
             'bytes_freed': bytes_freed,
             'reflog_entries_trimmed': reflog_trimmed,
+            'cache_files_deleted': cache_deleted,
             'dry_run': dry_run,
         }
+
+    #: Session-cache subdirectories swept by gc_caches (one file per session).
+    SESSION_CACHE_KINDS = ('recall', 'recall-hints', 'ctx-recall', 'stop-guard')
+    #: Session-cache files older than this are dead weight — sessions don't
+    #: resume after a month.
+    CACHE_MAX_AGE_DAYS = 30
+
+    def gc_caches(self, max_age_days: int = None, dry_run: bool = False) -> int:
+        """Delete per-session cache files older than `max_age_days`.
+
+        The hooks write one small file per session under
+        `.memgit/cache/{recall,recall-hints,ctx-recall,stop-guard}` and only
+        ever prune when a single directory passes 512 entries — a store used
+        daily accumulates hundreds of dead session files long before that.
+        Best-effort and silent: also called opportunistically at the end of
+        `sync`. Returns the number of files deleted (or that would be).
+        """
+        if max_age_days is None:
+            max_age_days = self.CACHE_MAX_AGE_DAYS
+        cutoff = time.time() - max_age_days * 86400
+        deleted = 0
+        for kind in self.SESSION_CACHE_KINDS:
+            d = self.path / 'cache' / kind
+            if not d.is_dir():
+                continue
+            try:
+                entries = list(d.iterdir())
+            except OSError:
+                continue
+            for p in entries:
+                try:
+                    if p.is_file() and p.stat().st_mtime < cutoff:
+                        if not dry_run:
+                            p.unlink()
+                        deleted += 1
+                except OSError:
+                    pass
+        return deleted
 
     # ── Flat memories/ directory (git-native sync) ────────────────────────────
 
@@ -1392,8 +1489,15 @@ class Repository:
     # ── Stats ─────────────────────────────────────────────────────────────────
 
     def stats(self) -> dict:
-        """Compute token-savings statistics for the memory store."""
-        from .tokens import all_memories_tokens, memory_tokens, token_cost_usd
+        """Store health + measured context-cost figures.
+
+        Honest by construction: every number is either MEASURED (a real
+        render, a real count) or labeled an estimate. No simulated query
+        mixes, no sessions-per-week extrapolations, no model pricing — the
+        old "savings" block invented all three and taught operators to
+        distrust the rest of the output.
+        """
+        from .tokens import all_memories_tokens, count_tokens, memory_tokens
 
         mnemonics = self.list()
         if not mnemonics:
@@ -1402,13 +1506,23 @@ class Repository:
         full_tokens = all_memories_tokens(mnemonics)
         avg_mem_tokens = full_tokens / len(mnemonics) if mnemonics else 0
 
-        # Cost of a typical search: top-8 memories of average size.
-        # (Deterministic — simulated queries under-fill the top-k on misses
-        # and inflate the savings figure.)
-        avg_search_tokens = round(avg_mem_tokens * min(8, len(mnemonics)))
-
         critical = [m for m in mnemonics if m.priority == 3]
         critical_tokens = sum(memory_tokens(m) for m in critical)
+
+        # Measured: the resume digest is what a session actually pays at
+        # start — render it for real and count it.
+        try:
+            from .cli import _format_resume_plain
+            resume_digest_tokens = count_tokens(
+                _format_resume_plain(self.resume_context()))
+        except Exception:
+            resume_digest_tokens = 0
+
+        # Estimate: a prompt-recall block is the top-3 rules (chars/4).
+        avg_rule_chars = (sum(len(m.rule or '') for m in mnemonics)
+                          / len(mnemonics))
+        recall_block_tokens_est = round(
+            min(3, len(mnemonics)) * avg_rule_chars / 4)
 
         by_type: dict[str, int] = {}
         for m in mnemonics:
@@ -1434,11 +1548,11 @@ class Repository:
             },
             'full_tokens': full_tokens,
             'avg_mem_tokens': round(avg_mem_tokens),
-            'avg_search_tokens': avg_search_tokens,
             'critical_tokens': critical_tokens,
-            'reduction_pct': round(100 * (1 - avg_search_tokens / full_tokens)) if full_tokens else 0,
-            'weekly_savings_tokens': (full_tokens - avg_search_tokens) * 10,  # 10 sessions/week
-            'weekly_savings_usd': round(token_cost_usd((full_tokens - avg_search_tokens) * 10), 4),
+            'resume_digest_tokens': resume_digest_tokens,
+            'recall_block_tokens_est': recall_block_tokens_est,
+            'injected_per_session_tokens_est': (
+                resume_digest_tokens + recall_block_tokens_est),
             'checkpoint_count': ck_count,
             'first_checkpoint_ts': first_ts,
             'last_checkpoint_ts': last[0].timestamp if last else None,

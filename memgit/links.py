@@ -199,6 +199,8 @@ def entity_index(mnemonics: list[Mnemonic], project: Optional[str],
 # The PostToolUse hook fires on every Read/Grep/Glob — it must NEVER load the
 # object store. The tagmap is rebuilt once per commit and read as one small
 # JSON file: {tag: {project_label_or_"": count}}, superseded filtered.
+# The "" bucket is EXPLICITLY-GLOBAL memories (project=None) — quarantined
+# `_unknown` memories keep their own '_unknown' key and are never counted.
 
 _TAGMAP = 'tagmap.json'
 
@@ -237,14 +239,20 @@ def read_tagmap(repo) -> dict:
 
 
 def tagmap_count(tagmap: dict, tag: str, project: Optional[str]) -> int:
-    """Project-scoped count for one tag: this project's tree + unscoped."""
-    from .project import project_affinity
+    """Project-scoped count for one tag: this project's tree + explicit-global.
+
+    `_unknown` (quarantined provenance) is never counted: it has zero
+    affinity with everything, so it falls through both branches below.
+    """
+    from .project import UNKNOWN_PROJECT, project_affinity
 
     per = tagmap.get(tag)
     if not per:
         return 0
     total = 0
     for proj, n in per.items():
+        if proj == UNKNOWN_PROJECT:
+            continue
         if not proj:
             total += int(n)
         elif project and project_affinity(proj, project) >= 1:

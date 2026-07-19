@@ -85,17 +85,20 @@ def prompt_recall() -> int:
     if repo is None:
         return 0
 
-    from .project import project_label_from_path
+    from .project import detect_project, scope_filter
     from .scorer import score as bm25_score
 
-    cwd = payload.get('cwd') or '.'
-    project = project_label_from_path(Path(cwd))
+    cwd = payload.get('cwd')
+    project = detect_project(Path(cwd) if cwd else None)
 
     try:
         from .links import filter_active
         # Superseded memories are filtered BEFORE scoring: stale chain links
         # must not consume rank slots or distort the IDF threshold below.
-        mnemonics = filter_active(repo.list())
+        # Then scoped to this project's family + explicit-global: recall is
+        # filter-by-default — another project's memories never inject, and
+        # the IDF corpus (and the depth hint below) see only the scoped pool.
+        mnemonics = scope_filter(filter_active(repo.list()), project)
         results = bm25_score(prompt, mnemonics, top_k=RECALL_TOP_K,
                              boost_project=project)
     except Exception:
@@ -175,10 +178,13 @@ def _depth_hint(results, mnemonics, seen: set[str],
 
     Picks the single best tag: among tags carried by the injected results,
     the one with the most ACTIVE memories that were neither injected nor
-    already seen this session. Requires >= 2 (a count of 1 is not depth and
-    teaches the model to ignore counts). Project-label tags are excluded —
-    the same noise rule as the memory index and context recall. At most one
-    line, ever. Returns (line, tag) — both None when nothing clears the bar.
+    already seen this session. `mnemonics` is the SCOPED pool (family +
+    explicit-global), so the advertised count is exactly what a scoped
+    search will return — a count inflated by foreign projects would lead
+    nowhere. Requires >= 2 (a count of 1 is not depth and teaches the model
+    to ignore counts). Project-label tags are excluded — the same noise rule
+    as the memory index and context recall. At most one line, ever.
+    Returns (line, tag) — both None when nothing clears the bar.
     """
     from .links import label_noise
     noise = label_noise(project)
@@ -250,7 +256,7 @@ def context_recall() -> int:
         return 0
 
     from .links import read_tagmap, tagmap_count, write_tagmap
-    from .project import project_label_from_path
+    from .project import detect_project
 
     tagmap = read_tagmap(repo)
     if not tagmap:
@@ -261,7 +267,8 @@ def context_recall() -> int:
         tagmap = read_tagmap(repo)
     if not tagmap:
         return 0
-    project = project_label_from_path(Path(payload.get('cwd') or '.'))
+    cwd = payload.get('cwd')
+    project = detect_project(Path(cwd) if cwd else None)
 
     tokens = _path_tokens(raw)
     if not tokens:

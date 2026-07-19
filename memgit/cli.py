@@ -165,7 +165,10 @@ def init(directory):
               help='Full long-form detail (multi-line ok, or "-" to read stdin)')
 @click.option('--project', '-P', default=None,
               help='Project this memory belongs to (default: derived from the '
-                   'current directory; pass "" for a global memory)')
+                   'current directory)')
+@click.option('--global', '-g', 'is_global', is_flag=True,
+              help='Explicitly global memory — applies in every project '
+                   '(mutually exclusive with --project)')
 @click.option('--supersedes', default=None,
               help='Comma-separated slugs this memory REPLACES (corrections, '
                    'updated decisions) — superseded memories stop surfacing in '
@@ -173,7 +176,7 @@ def init(directory):
 @click.option('--related', default=None,
               help='Comma-separated slugs of related memories')
 def add(slug, rule, type_code, why, when, tags, priority, body, project,
-        supersedes, related):
+        is_global, supersedes, related):
     """Add or update a mnemonic.
 
     SLUG  kebab-case identifier (e.g. ig-pipeline-no-fallback)\n
@@ -184,10 +187,24 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project,
     if body == '-':
         body = sys.stdin.read().strip() or None
     # Same scoping semantics as MCP save_memory: absent → this workspace,
-    # explicit empty → deliberately global.
-    if project is None:
-        from .project import project_label_from_path
-        project = project_label_from_path(Path.cwd())
+    # --global (or explicit empty string) → deliberately global. Detection
+    # failing must never silently produce a global memory — quarantine it
+    # under `_unknown` and say so.
+    if is_global and project is not None:
+        err.print('[red]--global and --project are mutually exclusive[/red]')
+        sys.exit(1)
+    from .project import UNKNOWN_PROJECT, detect_project
+    if is_global:
+        project = None
+    elif project is None:
+        project = detect_project()
+        if project is None:
+            project = UNKNOWN_PROJECT
+            err.print(f'[yellow]project could not be determined — memory '
+                      f'quarantined under {UNKNOWN_PROJECT!r} (it will not '
+                      f'surface in any project). Pass --project/--global or '
+                      f'run from the project directory; relabel later with '
+                      f'`memgit doctor --relabel`.[/yellow]')
     elif not project.strip():
         project = None
 
@@ -233,8 +250,8 @@ def remove(slug):
 # ── core ──────────────────────────────────────────────────────────────────────
 
 def _current_project() -> Optional[str]:
-    from .project import project_label_from_path
-    return project_label_from_path(Path.cwd())
+    from .project import detect_project
+    return detect_project()
 
 
 def _core_slug(project: Optional[str]) -> str:
@@ -350,11 +367,29 @@ def core_sync(hosts, all_hosts, dry_run):
                       f'{sum(1 for r in results if r.action in ("created", "updated"))} host file(s)')
 
 
+def _project_is_store(repo, project: Optional[str]) -> bool:
+    """True when `project` labels a path inside the store root itself.
+
+    Guard for the auto-core path: a hook or sync running with the store as
+    its cwd (any generation of the old `cd <store> && memgit sync` template
+    still installed) must never create a core guide FOR the store, nor
+    deliver rule files INTO it — the store is data, not a workspace.
+    """
+    if not project:
+        return False
+    from .project import project_label_from_path
+    store_label = project_label_from_path(repo.path.parent)
+    return bool(store_label) and (project == store_label
+                                  or project.startswith(store_label + '-'))
+
+
 def _refresh_core(repo, project, redeliver=True) -> bool:
     """Recompute the auto (usage-driven) section of the project's core guide.
     If it changed, checkpoint the new body and refresh already-delivered host
     files. The curated region is never touched. Returns True if it changed."""
     from .delivery import refresh_core_body, deliver
+    if _project_is_store(repo, project):
+        return False
     m = _get_core(repo, project)
     if m is None:
         return False
@@ -374,11 +409,16 @@ def _refresh_core(repo, project, redeliver=True) -> bool:
 
 
 def _maybe_auto_core(repo) -> None:
-    """Best-effort auto-grow, called from `sync` (the Stop hook). Silent and
-    never raises — the AI is the operator, so this must just work in the
-    background without a human running anything."""
+    """Best-effort end-of-sync housekeeping, called from `sync` (the Stop
+    hook): auto-grow the core guide and sweep month-old session-cache files.
+    Silent and never raises — the AI is the operator, so this must just work
+    in the background without a human running anything."""
     try:
         _refresh_core(repo, _current_project())
+    except Exception:
+        pass
+    try:
+        repo.gc_caches()
     except Exception:
         pass
 
@@ -528,10 +568,10 @@ def resume(checkpoints, recent, plain, fmt_json, project):
     leads with the project you are standing in.
     """
     import json as _j
-    from .importer import project_label_from_path
+    from .project import detect_project
     repo = _require_repo()
     if project is None:
-        project = project_label_from_path(Path.cwd())
+        project = detect_project()
     ctx = repo.resume_context(checkpoints=checkpoints, recent=recent, project=project)
 
     if fmt_json:
@@ -591,15 +631,52 @@ def resume(checkpoints, recent, plain, fmt_json, project):
     console.print()
 
 
-def _format_resume_plain(ctx: dict) -> str:
-    """Plain-text resume digest — injected into AI context by the SessionStart hook.
+#: Hard character budget for the injected resume digest (~2.4k tokens). Paid
+#: at the start of EVERY session — past this, sections trim in a fixed order.
+RESUME_BUDGET_CHARS = 9_500
 
-    Deliberately bounded (~300-600 tokens regardless of store size): rules are
+
+def _format_resume_plain(ctx: dict) -> str:
+    """Plain-text resume digest — injected into AI context by the SessionStart
+    hook, under a hard budget of RESUME_BUDGET_CHARS.
+
+    When the render exceeds the budget, sections are trimmed in a fixed
+    order — recent memories 10→5, checkpoints 5→3, critical-rule text
+    clipped to 160 chars, memory-index topics 8→5, recent 5→3 — re-rendering
+    after each cut until it fits. The core operating guide body and the
+    status board are NEVER trimmed: they are the two surfaces the model must
+    be able to trust in full.
+    """
+    text = _render_resume_plain(ctx)
+    if len(text) <= RESUME_BUDGET_CHARS:
+        return text
+    ctx = dict(ctx)  # never mutate the caller's context
+    trims = (
+        lambda c: c.update(recent_memories=c.get('recent_memories', [])[:5]),
+        lambda c: c.update(checkpoints=c.get('checkpoints', [])[:3]),
+        lambda c: c.update(_crit_clip=160),
+        lambda c: c.update(entity_index=c.get('entity_index', [])[:5]),
+        lambda c: c.update(recent_memories=c.get('recent_memories', [])[:3]),
+    )
+    for trim in trims:
+        trim(ctx)
+        text = _render_resume_plain(ctx)
+        if len(text) <= RESUME_BUDGET_CHARS:
+            break
+    return text
+
+
+def _render_resume_plain(ctx: dict) -> str:
+    """Render the resume digest from a (possibly trimmed) context dict.
+
+    Deliberately bounded (~300-600 tokens on a typical store): rules are
     truncated and the critical list is capped, because this text is paid for
     at the start of EVERY session. Full text is one get_memory call away.
     """
     def clip(text: str, n: int = 200) -> str:
         return text if len(text) <= n else text[:n - 1] + '…'
+
+    crit_clip = int(ctx.get('_crit_clip', 200))
 
     proj = f' · project {ctx["project"]}' if ctx.get('project') else ''
     lines = [
@@ -661,7 +738,7 @@ def _format_resume_plain(ctx: dict) -> str:
         lines.append('## Critical rules — always apply')
         crit = ctx['critical_memories']
         for m in crit[:20]:
-            lines.append(f'- {m["slug"]}: {clip(m["rule"])}')
+            lines.append(f'- {m["slug"]}: {clip(m["rule"], crit_clip)}')
         if len(crit) > 20:
             lines.append(f'- …and {len(crit) - 20} more — run list_memories with min_priority=3')
     if ctx.get('maintenance'):
@@ -1055,18 +1132,25 @@ def list_cmd(type_filter, priority, project_filter, toon):
     table.add_column('Project', style='dim', max_width=18)
     table.add_column('Rule', max_width=60)
 
+    from .project import UNKNOWN_PROJECT
     for m in mnemonics:
         p_str = '!' if m.priority == 3 else str(m.priority)
-        proj = (m.project or '')[:18]
+        # `_unknown` = quarantined provenance — flag it, it surfaces nowhere
+        proj = ('[?project]' if m.project == UNKNOWN_PROJECT
+                else (m.project or ''))[:18]
         rule_preview = m.rule[:58] + '..' if len(m.rule) > 58 else m.rule
         if m.slug in hidden:
             rule_preview = '⊘ ' + rule_preview
-        table.add_row(m.slug, m.type_code, p_str, proj, rule_preview)
+        table.add_row(m.slug, m.type_code, p_str, Text(proj), rule_preview)
 
     console.print(table)
     shown_hidden = sum(1 for m in mnemonics if m.slug in hidden)
     hid_note = f' · {shown_hidden} superseded (⊘)' if shown_hidden else ''
-    console.print(f'\n[dim]{len(mnemonics)} mnemonic{"s" if len(mnemonics) != 1 else ""}{hid_note}[/dim]')
+    unknown_n = sum(1 for m in mnemonics if m.project == UNKNOWN_PROJECT)
+    unk_note = (f' · {unknown_n} unknown provenance ([?project] — '
+                f'relabel with `memgit doctor`)') if unknown_n else ''
+    console.print(f'\n[dim]{len(mnemonics)} mnemonic{"s" if len(mnemonics) != 1 else ""}'
+                  f'{hid_note}[/dim]{unk_note}')
 
 
 # ── import ────────────────────────────────────────────────────────────────────
@@ -1235,6 +1319,7 @@ def thread_switch(name):
 @cli.command()
 def lint():
     """Lint all staged mnemonics."""
+    from .project import UNKNOWN_PROJECT
     repo = _require_repo()
     mnemonics = repo.list()
     issues = 0
@@ -1248,6 +1333,12 @@ def lint():
         if not re.match(r'^[a-z0-9_-]+$', m.slug):
             console.print(f'[yellow]{m.slug}[/yellow]: slug should be kebab-case [a-z0-9_-]')
             issues += 1
+    unknown = [m for m in mnemonics if m.project == UNKNOWN_PROJECT]
+    if unknown:
+        console.print(f'[yellow]{len(unknown)} memories have unknown provenance '
+                      f'({UNKNOWN_PROJECT}) — they surface in no project; '
+                      f'relabel with `memgit doctor --relabel`[/yellow]')
+        issues += 1
     if issues == 0:
         console.print(f'[green]OK[/green] — {len(mnemonics)} mnemonics, no issues')
     else:
@@ -1269,20 +1360,27 @@ import re  # noqa: E402 — needed for lint command
               type=click.Choice(['fb', 'us', 'pj', 'rf', 'cn', 'lx', 'co', 'tr']),
               help='Filter by type before scoring')
 @click.option('--project', '-P', 'project_filter', default=None,
-              help='Only memories from this project (as shown in `memgit list`)')
+              help='Hard-filter to exactly this project (as shown in `memgit list`)')
+@click.option('--all-projects', is_flag=True,
+              help='Search the entire store instead of the default scope '
+                   '(current project family + global memories)')
 @click.option('--include-superseded', is_flag=True,
               help='Also score memories that a newer memory supersedes '
                    '(hidden by default)')
 def search(query, top, toon, fmt_json, type_filter, project_filter,
-           include_superseded):
+           all_projects, include_superseded):
     """Search memories by relevance.
 
-    Returns the top-k mnemonics scored against QUERY using BM25.
+    Returns the top-k mnemonics scored against QUERY using BM25. Scoped by
+    default to the current project's family plus global memories — use
+    --all-projects to search everything, or --project to hard-filter one.
     """
     import json
+    from .project import detect_project
     from .scorer import score as bm25_score
 
     repo = _require_repo()
+    current_project = detect_project()
     mnemonics = repo.list()
     if not include_superseded:
         from .links import filter_active
@@ -1292,10 +1390,19 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
     if project_filter:
         mnemonics = [m for m in mnemonics if m.project == project_filter]
 
-    results = bm25_score(query, mnemonics, top_k=top)
+    # Filter-by-default: scope to the current project family + global unless
+    # a hard project filter or --all-projects widened the search.
+    scope = None
+    if not project_filter and not all_projects:
+        scope = current_project
+    results = bm25_score(query, mnemonics, top_k=top,
+                         boost_project=current_project, scope_project=scope)
 
     if not results:
         console.print('[dim]No results.[/dim]')
+        if scope:
+            console.print(f'[dim](scoped to {scope} + global — '
+                          'try --all-projects for the whole store)[/dim]')
         return
 
     if fmt_json:
@@ -1311,6 +1418,7 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
                 'why': m.why,
                 'when': m.when,
                 'tags': m.tags,
+                'project': m.project,
                 'matched': r.matched_fields,
             })
         print(json.dumps(out, indent=2))
@@ -1326,15 +1434,20 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
     table.add_column('Score', width=6, style='dim')
     table.add_column('Slug', style='cyan', min_width=20)
     table.add_column('T', width=2)
+    table.add_column('Project', style='dim', max_width=18)
     table.add_column('Rule', max_width=65)
 
     for r in results:
         m = r.mnemonic
         rule_preview = m.rule[:63] + '..' if len(m.rule) > 63 else m.rule
-        table.add_row(f'{r.score:.2f}', m.slug, m.type_code, rule_preview)
+        table.add_row(f'{r.score:.2f}', m.slug, m.type_code,
+                      (m.project or '')[:18], rule_preview)
 
     console.print(table)
-    console.print(f'\n[dim]{len(results)} result{"s" if len(results) != 1 else ""} for "{query}"[/dim]')
+    scope_note = (f' · scope {scope}+global' if scope
+                  else ' · all projects' if not project_filter else '')
+    console.print(f'\n[dim]{len(results)} result{"s" if len(results) != 1 else ""} '
+                  f'for "{query}"{scope_note}[/dim]')
 
 
 # ── sync ──────────────────────────────────────────────────────────────────────
@@ -1538,11 +1651,10 @@ def daemon_status(port):
 @cli.command()
 @click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output (token-cheap for AI callers)')
 def stats(fmt_json):
-    """Show token-savings proof and store health metrics.
+    """Show store health metrics and measured context costs.
 
-    Compares loading ALL memories (the claude.md / dump approach) against
-    memgit's relevance-filtered search — and shows the real token and dollar
-    savings your team gets every session.
+    All figures are measured (a real digest render, a real corpus count) or
+    clearly labeled estimates — no simulated savings or extrapolations.
     """
     repo = _require_repo()
     s = repo.stats()
@@ -1570,13 +1682,10 @@ def stats(fmt_json):
     prio = s['priority_counts']
     prio_str = f"{prio.get(3, 0)} critical · {prio.get(2, 0)} medium · {prio.get(1, 0)} low"
 
-    reduction = s['reduction_pct']
     full_tok = s['full_tokens']
-    search_tok = s['avg_search_tokens']
-    crit_tok = s['critical_tokens']
-
-    weekly_tokens = s['weekly_savings_tokens']
-    weekly_usd = s['weekly_savings_usd']
+    resume_tok = s['resume_digest_tokens']
+    recall_tok = s['recall_block_tokens_est']
+    injected_tok = s['injected_per_session_tokens_est']
 
     ck_count = s['checkpoint_count']
     first_ts = s['first_checkpoint_ts'].strftime('%Y-%m-%d') if s['first_checkpoint_ts'] else '—'
@@ -1608,51 +1717,23 @@ def stats(fmt_json):
     console.print(t)
     console.print()
 
-    console.print('[bold]Token cost comparison[/bold]')
+    console.print('[bold]Context footprint[/bold]  [dim](measured where possible; '
+                  'estimates labeled)[/dim]')
     console.print()
 
-    bench = Table(box=box.SIMPLE, header_style='bold')
-    bench.add_column('Approach', style='', min_width=30)
-    bench.add_column('Tokens/session', justify='right')
-    bench.add_column('vs full load', justify='right')
-    bench.add_column('$/session (GPT-4o)', justify='right')
+    tok = Table(box=box.SIMPLE, header_style='bold')
+    tok.add_column('Surface', min_width=34)
+    tok.add_column('Tokens', justify='right')
 
-    from .tokens import token_cost_usd
-    bench.add_row(
-        '[red]claude.md / dump all memories[/red]',
-        f'{full_tok:,}',
-        '100%  baseline',
-        f'${token_cost_usd(full_tok):.4f}',
-    )
-    bench.add_row(
-        '[green]memgit search (BM25 top-8)[/green]',
-        f'{search_tok:,}',
-        f'[green]{100 - reduction}%  ({reduction}% savings)[/green]',
-        f'[green]${token_cost_usd(search_tok):.4f}[/green]',
-    )
-    if crit_tok > 0:
-        bench.add_row(
-            '[cyan]  + critical memories (always)[/cyan]',
-            f'+{crit_tok:,}  [dim](overhead)[/dim]',
-            '',
-            '',
-        )
-    console.print(bench)
+    tok.add_row('Full store (every memory as context)', f'{full_tok:,}')
+    tok.add_row('Resume digest  [dim](measured render)[/dim]', f'{resume_tok:,}')
+    tok.add_row('Recall block  [dim](estimate: top-3 rules ≈ chars/4)[/dim]',
+                f'~{recall_tok:,}')
+    console.print(tok)
 
-    console.print()
-    console.print('[bold]Weekly savings  [dim](10 sessions/week)[/dim][/bold]')
-    console.print()
-
-    savings = Table(box=None, show_header=False, padding=(0, 2))
-    savings.add_column(style='dim', width=30)
-    savings.add_column()
-
-    savings.add_row('Tokens saved/week', f'[green]{weekly_tokens:,}[/green]')
-    savings.add_row('Cost saved/week (GPT-4o)', f'[green]${weekly_usd:.4f}[/green]')
-    savings.add_row('', '')
-    savings.add_row('Annualised token savings', f'[bold green]{weekly_tokens * 52:,}[/bold green]')
-    savings.add_row('Annualised cost savings', f'[bold green]${weekly_usd * 52:.2f}[/bold green]')
-    console.print(savings)
+    console.print(f'  [dim]per-session injected ≈ [/dim]{injected_tok:,}'
+                  f'[dim] tokens (estimate) vs [/dim]{full_tok:,}'
+                  f'[dim] tokens if the full store were loaded[/dim]')
 
     console.print()
     has_flat = (repo.path.parent / 'memories').exists()
@@ -1771,9 +1852,152 @@ def gc(dry_run, squash_keep, reflog_keep, fmt_json):
     verb = 'would delete' if dry_run else 'deleted'
     console.print(f'[green]gc[/green]  {verb} [bold]{r["objects_deleted"]}[/bold] unreachable objects '
                   f'({_human_bytes(r["bytes_freed"])} freed), '
-                  f'trimmed {r["reflog_entries_trimmed"]} reflog entries')
+                  f'trimmed {r["reflog_entries_trimmed"]} reflog entries, '
+                  f'swept {r["cache_files_deleted"]} stale session-cache file(s)')
     console.print(f'    [dim]store: {r["objects_after"]} objects, '
                   f'{_human_bytes(r["bytes_before"] - (0 if dry_run else r["bytes_freed"]))}[/dim]')
+
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option('--relabel', 'relabel_path', default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help='Bulk re-project memories from a JSON mapping file: '
+                   '{"slug": "New-Project-Label" | ""} ("" = explicit global)')
+@click.option('--prune-usage', 'prune_slugs', multiple=True, metavar='SLUG',
+              help='Remove these slugs from the usage ledger (repeatable)')
+@click.option('--clean-caches', is_flag=True,
+              help='Delete session-cache files older than 30 days now')
+@click.option('--prune-session', 'prune_sessions', multiple=True, metavar='ID',
+              help='Delete the named session-cache files across all cache '
+                   'kinds (e.g. leftover test artifacts; repeatable)')
+def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions):
+    """Diagnose and repair store hygiene: provenance, usage ledger, caches.
+
+    With no options, prints a report: quarantined (`_unknown`) and
+    explicitly-global memories grouped by tag, stale session-cache files,
+    and usage-ledger entries whose memory no longer exists. The repair
+    options below act on exactly what the report names.
+    """
+    import json as _j
+    from collections import Counter
+    from .project import UNKNOWN_PROJECT
+    from .usage import read_usage
+    repo = _require_repo()
+
+    acted = False
+
+    if relabel_path:
+        acted = True
+        try:
+            mapping = _j.loads(Path(relabel_path).read_text(encoding='utf-8'))
+        except (OSError, _j.JSONDecodeError) as e:
+            err.print(f'[red]cannot read mapping: {e}[/red]')
+            sys.exit(1)
+        if not isinstance(mapping, dict):
+            err.print('[red]mapping must be a JSON object '
+                      '{"slug": "Label" | ""}[/red]')
+            sys.exit(1)
+        relabeled = 0
+        for slug, label in mapping.items():
+            m = repo.get(slug)
+            if m is None:
+                console.print(f'  [yellow]skip[/yellow]     {slug} (not found)')
+                continue
+            new_project = (label or '').strip() or None
+            if new_project == m.project:
+                console.print(f'  [dim]unchanged[/dim] {slug} '
+                              f'({new_project or "(global)"})')
+                continue
+            old = m.project or '(global)'
+            # Only `project` changes — timestamp and every other field are
+            # written back byte-for-byte through the normal object store.
+            m.project = new_project
+            m.sha = None
+            repo.add(m)
+            relabeled += 1
+            console.print(f'  [green]relabel[/green]  {slug}: {old} → '
+                          f'{new_project or "(global)"}')
+        if relabeled:
+            sha = repo.commit(message=f'doctor: relabel {relabeled} memories',
+                              trigger='explicit')
+            console.print(f'[green]doctor[/green]  relabeled {relabeled} '
+                          f'memor{"ies" if relabeled != 1 else "y"}'
+                          + (f'  [dim]checkpoint {sha[:8]}[/dim]' if sha else ''))
+        else:
+            console.print('[dim]doctor: nothing to relabel[/dim]')
+
+    if prune_slugs:
+        acted = True
+        from .usage import prune_usage
+        removed = prune_usage(repo, prune_slugs)
+        missing = [s for s in prune_slugs if s not in removed]
+        console.print(f'[green]doctor[/green]  pruned {len(removed)} usage '
+                      f'entr{"ies" if len(removed) != 1 else "y"}'
+                      + (f'  [dim](not in ledger: {", ".join(missing)})[/dim]'
+                         if missing else ''))
+
+    if clean_caches or prune_sessions:
+        acted = True
+        deleted = repo.gc_caches() if clean_caches else 0
+        pruned = 0
+        for sid in prune_sessions:
+            name = Path(str(sid)).name  # never allow path escapes
+            for kind in repo.SESSION_CACHE_KINDS:
+                p = repo.path / 'cache' / kind / name
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        pruned += 1
+                except OSError:
+                    pass
+        console.print(f'[green]doctor[/green]  removed {deleted} stale + '
+                      f'{pruned} named session-cache file(s)')
+
+    if acted:
+        return
+
+    # ── report ────────────────────────────────────────────────────────────
+    mnemonics = repo.list()
+
+    def _by_tag(mems) -> str:
+        counts = Counter(t.strip() for m in mems for t in (m.tags or ['(untagged)'])
+                         if t.strip())
+        top = counts.most_common(8)
+        return ' · '.join(f'{tag} ({n})' for tag, n in top) if top else '—'
+
+    unknown = [m for m in mnemonics if m.project == UNKNOWN_PROJECT]
+    global_mems = [m for m in mnemonics if m.project is None]
+    stale = repo.gc_caches(dry_run=True)
+    index_slugs = set(repo.get_index())
+    orphans = sorted(s for s in read_usage(repo) if s not in index_slugs)
+
+    console.print('[bold]memgit doctor[/bold] — store hygiene report\n')
+    if unknown:
+        console.print(f'[yellow]{len(unknown)} quarantined ({UNKNOWN_PROJECT})'
+                      f'[/yellow] — surface in NO project; relabel with '
+                      f'`memgit doctor --relabel <mapping.json>`')
+        console.print(f'  by tag: {_by_tag(unknown)}')
+        for m in unknown[:20]:
+            console.print(f'  [dim]{m.slug}[/dim]')
+        if len(unknown) > 20:
+            console.print(f'  [dim]… and {len(unknown) - 20} more[/dim]')
+    else:
+        console.print('[green]0 quarantined[/green] — every memory has known provenance')
+    console.print(f'{len(global_mems)} explicitly global (apply everywhere)'
+                  + (f' — by tag: {_by_tag(global_mems)}' if global_mems else ''))
+    console.print(f'{stale} session-cache file(s) older than '
+                  f'{repo.CACHE_MAX_AGE_DAYS} days'
+                  + (' — sweep with `memgit doctor --clean-caches`' if stale else ''))
+    if orphans:
+        preview = ', '.join(orphans[:6]) + (', …' if len(orphans) > 6 else '')
+        console.print(f'{len(orphans)} usage-ledger entr'
+                      f'{"ies" if len(orphans) != 1 else "y"} for memories no '
+                      f'longer in the index ({preview}) — prune with '
+                      f'`memgit doctor --prune-usage <slug>`')
+    else:
+        console.print('usage ledger clean — every entry maps to a live memory')
 
 
 # ── merge ─────────────────────────────────────────────────────────────────────
@@ -1959,24 +2183,30 @@ import json as _json
 
 
 def _memgit_base_cmd() -> list[str]:
-    """Return the best command prefix to invoke this memgit installation.
+    """Return the best command prefix to invoke this memgit installation —
+    for ANY install method (pipx, pip, uv tool, Homebrew, npm wrapper, …).
 
-    Priority: running binary path > which > python -m fallback.
-    sys.argv[0] ensures we register the exact binary that ran setup,
-    not whatever 'memgit' is first in PATH. A .py argv[0] (python -m runs)
-    is not directly executable — fall through to the interpreter form.
+    Priority, first hit wins:
+      1. the entry point actually running setup — sys.argv[0] resolved, but
+         only when its basename is `memgit`/`memgit.exe` and the resolved
+         file exists (a bare `pytest`/`python` argv0 must never be
+         registered as the memgit binary);
+      2. shutil.which('memgit') — whatever the user's PATH launches;
+      3. `<sys.executable> -m memgit.cli` — always works wherever the
+         package itself is importable.
+
+    Callers write the result verbatim (quoted) into hook commands and MCP
+    configs, so the paths returned are absolute.
     """
     import sys as _sys, os as _os
-    argv0 = _sys.argv[0]
-    if not argv0.endswith('.py'):
-        if _os.path.isabs(argv0) and _os.path.isfile(argv0):
-            return [argv0]
-        resolved = _os.path.realpath(argv0) if argv0 else None
-        if resolved and _os.path.isfile(resolved):
+    argv0 = _sys.argv[0] or ''
+    if _os.path.basename(argv0).lower() in ('memgit', 'memgit.exe'):
+        resolved = _os.path.realpath(argv0)
+        if _os.path.isfile(resolved):
             return [resolved]
     binary = _shutil.which('memgit')
     if binary:
-        return [binary]
+        return [_os.path.realpath(binary)]
     return [_sys.executable, '-m', 'memgit.cli']
 
 
@@ -2385,10 +2615,6 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
     settings_path = Path.home() / '.claude' / 'settings.json'
     base = ' '.join(shlex.quote(p) for p in _memgit_base_cmd())
 
-    from .repo import default_store_candidates
-    store = next((c for c in default_store_candidates() if (c / '.memgit').is_dir()),
-                 Path.home() / '.claude' / 'memgit-store')
-
     if settings_path.exists():
         try:
             data = _json.loads(settings_path.read_text(encoding='utf-8'))
@@ -2415,12 +2641,16 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
             {'type': 'command',
              'command': f'{base} hook context-recall 2>/dev/null || true'},
         ],
+        # NO `cd <store> &&` prefix on the sync command: `memgit sync`
+        # resolves the default store from any cwd via Repository.find(),
+        # and the cd poisoned every cwd-derived project label (the hook ran
+        # AS the store's project), which silently broke core auto-promotion.
         'Stop': ([] if no_guard else [
             {'type': 'command',
              'command': f'{base} hook stop-guard 2>/dev/null || true'},
         ]) + [
             {'type': 'command',
-             'command': f'cd {shlex.quote(str(store))} && {base} sync 2>/dev/null || true',
+             'command': f'{base} sync 2>/dev/null || true',
              'async': True},
         ],
     }

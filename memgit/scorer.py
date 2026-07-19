@@ -77,13 +77,23 @@ def score(
     mnemonics: list["Mnemonic"],
     top_k: int = 10,
     boost_project: str = None,
+    scope_project: str = None,
 ) -> list[ScoredMnemonic]:
     """Score mnemonics against query and return top-k by relevance.
 
     boost_project: memories whose .project matches get a relevance nudge,
     so the current workspace's memories outrank same-text matches from
     other projects without hiding global rules.
+
+    scope_project: PRE-FILTER the candidates to that project's family plus
+    explicit-global memories before anything is computed — IDF is then
+    derived from the scoped corpus, so a term common in a foreign project
+    can't distort ranking here. This is the filter-by-default boundary;
+    boost_project still orders within the scoped pool.
     """
+    if scope_project:
+        from .project import scope_filter
+        mnemonics = scope_filter(mnemonics, scope_project)
     if not query.strip() or not mnemonics:
         return []
 

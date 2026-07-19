@@ -24,7 +24,11 @@ from .scorer import score as bm25_score
 
 
 def _default_store() -> Path:
-    return Path.home() / ".claude" / "memgit-store"
+    from .repo import default_store_candidates
+    for candidate in default_store_candidates():
+        if (candidate / ".memgit").is_dir():
+            return candidate
+    return default_store_candidates()[0]
 
 
 def _load_repo(store_path: Path | None) -> Repository | None:
@@ -45,6 +49,8 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None) -> dict[str, Any]:
         d["tags"] = m.tags
     if m.desc:
         d["desc"] = m.desc
+    if m.project:
+        d["project"] = m.project
     if score is not None:
         d["score"] = round(score, 4)
     return d
@@ -188,6 +194,8 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 return
             top_k = min(int(body.get("top_k", 8)), 30)
             type_filter = body.get("type_filter")
+            project_filter = body.get("project")
+            all_projects = bool(body.get("all_projects"))
 
             repo = _load_repo(self.store_path)
             if repo is None:
@@ -200,8 +208,21 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 mnemonics = filter_active(mnemonics)
             if type_filter:
                 mnemonics = [m for m in mnemonics if m.type_code == type_filter]
+            if project_filter:
+                mnemonics = [m for m in mnemonics if m.project == project_filter]
 
-            results = bm25_score(query, mnemonics, top_k=top_k)
+            # Same filter-by-default semantics as MCP search: scoped to the
+            # detected project family + global unless hard-filtered/widened.
+            # (An HTTP daemon usually detects via MEMGIT_PROJECT, or not at
+            # all — with no detectable project the search is unscoped.)
+            from .project import detect_project
+            current_project = detect_project()
+            scope = None
+            if not project_filter and not all_projects:
+                scope = current_project
+            results = bm25_score(query, mnemonics, top_k=top_k,
+                                 boost_project=current_project,
+                                 scope_project=scope)
             self._json_response([_mnem_to_dict(r.mnemonic, r.score) for r in results])
             return
 
@@ -229,6 +250,24 @@ class MemgitHandler(BaseHTTPRequestHandler):
             from .links import validate_relations
             sup_list, rel_list, warnings = validate_relations(
                 slug, body.get("supersedes"), body.get("related"), repo.list())
+
+            # project: explicit value wins; "" = deliberately global; absent
+            # → detected. Detection failing quarantines under `_unknown` —
+            # an HTTP save must never silently become global.
+            from .project import UNKNOWN_PROJECT, detect_project
+            if "project" in body:
+                project = (body.get("project") or "").strip() or None
+            else:
+                project = detect_project()
+                if project is None:
+                    project = UNKNOWN_PROJECT
+                    warnings = list(warnings) + [
+                        "project could not be determined — memory quarantined "
+                        f"under '{UNKNOWN_PROJECT}'. Pass project explicitly "
+                        "(a label, or \"\" for global); relabel with "
+                        "`memgit doctor --relabel`."
+                    ]
+
             mem = Mnemonic(
                 type_code=body.get("type_code", "fb"),
                 slug=slug,
@@ -239,12 +278,14 @@ class MemgitHandler(BaseHTTPRequestHandler):
                 why=body.get("why"),
                 when=body.get("when"),
                 body=body.get("body"),
+                project=project,
                 supersedes=sup_list,
                 related=rel_list,
             )
             repo.add(mem)
             action = "updated" if existing else "saved"
-            out = {"status": "ok", "action": action, "slug": slug}
+            out = {"status": "ok", "action": action, "slug": slug,
+                   "project": project}
             if warnings:
                 out["warnings"] = warnings
             self._json_response(out)

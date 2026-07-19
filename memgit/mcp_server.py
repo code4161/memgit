@@ -35,7 +35,11 @@ _SERVER_DESCRIPTION = (
     "Do NOT wait for the user to ask you to remember — save proactively. "
     "Put the one-line fact in 'rule' and the full details in 'body' — body is where "
     "state, decisions, and context live losslessly. "
-    "(3) Memories are project-scoped: searches favor the project you are working in. "
+    "(3) Memories are project-scoped: searches and recall are FILTERED to the current project's "
+    "family plus global memories by default (pass all_projects=true to search the whole store, "
+    "or project=<label> to hard-filter one). Saves default to the current project; pass "
+    "project=\"\" for a deliberately-global memory — a save whose project can't be detected is "
+    "quarantined under '_unknown' until relabeled (`memgit doctor --relabel`). "
     "If the current project has NO memories yet (adopted mid-project), bootstrap it: "
     "extract 10-20 durable facts from README/CLAUDE.md/docs/git history and save_memory "
     "each — `memgit onboard` prints the full brief. "
@@ -82,21 +86,27 @@ def _default_store() -> Path:
     return Path.home() / ".claude" / "memgit-store"
 
 
-def _detect_project() -> str | None:
-    """Label for the project this MCP server is serving.
+#: Project label detected once at server startup (MCP hosts launch stdio
+#: servers with cwd set to the workspace). Kept as the per-call FALLBACK:
+#: envs are re-read on every call so MEMGIT_PROJECT / CLAUDE_PROJECT_DIR
+#: changes win, but a host that only communicated the workspace via the
+#: launch cwd still resolves correctly for the server's whole life.
+_startup_project: str | None = None
 
-    MCP hosts (Claude Code, Cursor, …) launch stdio servers with cwd set to
-    the workspace, so the cwd is the project. MEMGIT_PROJECT overrides.
+
+def _detect_project() -> str | None:
+    """Label for the project this MCP server is serving, re-derived per call.
+
+    Shares the single detection path (`project.detect_project`): explicit
+    envs first, then the current cwd; falls back to the label captured at
+    server startup.
     """
-    import os
-    env = os.environ.get("MEMGIT_PROJECT", "").strip()
-    if env:
-        return env
-    from .importer import project_label_from_path
+    from .project import detect_project
     try:
-        return project_label_from_path(Path.cwd())
-    except OSError:
-        return None
+        label = detect_project()
+    except Exception:
+        label = None
+    return label or _startup_project
 
 
 def _load_repo(store_path: Path | None) -> Repository | None:
@@ -136,6 +146,9 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None,
 
 def run_server(store_path: Path | None = None) -> None:
     """Run the MCP server on stdio."""
+    global _startup_project
+    _startup_project = _detect_project()
+
     server = Server(
         "memgit",
         instructions=_SERVER_DESCRIPTION,
@@ -183,6 +196,10 @@ def run_server(store_path: Path | None = None) -> None:
                     "CALL THIS: at the start of every session, before answering questions about past work, "
                     "before applying preferences the user may have expressed before, or whenever you are unsure "
                     "whether you have prior context on a topic. "
+                    "SCOPED BY DEFAULT: results come from the current project's family plus global "
+                    "(project-less) memories — other projects' memories never appear unless you widen. "
+                    "To widen: pass all_projects=true to search the entire store (each hit then carries "
+                    "its 'project' label), or pass project=<label> to hard-filter to one specific project. "
                     "The resume digest and <memgit-recall> blocks show a memory index with counts "
                     "('+N more on <topic>') — those topics are guaranteed to return results here; "
                     "the injected blocks are a teaser of this store, not its full depth. "
@@ -215,11 +232,20 @@ def run_server(store_path: Path | None = None) -> None:
                         "project": {
                             "type": "string",
                             "description": (
-                                "Hard-filter to one project's memories. Usually UNNECESSARY — "
-                                "the current project is auto-detected and its memories are "
-                                "boosted, while global rules still surface. Set only to look "
-                                "at a specific other project."
+                                "Hard-filter to exactly one project's memories. Usually "
+                                "UNNECESSARY — searches are already scoped to the current "
+                                "project's family + global memories. Set only to look at a "
+                                "specific other project."
                             ),
+                        },
+                        "all_projects": {
+                            "type": "boolean",
+                            "description": (
+                                "Search the ENTIRE store instead of the default scope "
+                                "(current project family + global). Every hit carries its "
+                                "'project' label so cross-project results are attributable."
+                            ),
+                            "default": False,
                         },
                         "format": {
                             "type": "string",
@@ -338,7 +364,10 @@ def run_server(store_path: Path | None = None) -> None:
                             "type": "string",
                             "description": (
                                 "Project this memory belongs to. Defaults to the current workspace — "
-                                "set explicitly only for global facts (pass empty string) or another project."
+                                "set explicitly only for global facts (pass empty string \"\" = applies "
+                                "everywhere) or another project. If omitted AND the workspace can't be "
+                                "detected, the memory is quarantined under '_unknown' instead of "
+                                "becoming global."
                             ),
                         },
                         "type_code": {
@@ -444,6 +473,7 @@ def run_server(store_path: Path | None = None) -> None:
             top_k = min(int(arguments.get("top_k", 8)), 30)
             type_filter = arguments.get("type_filter")
             project_filter = arguments.get("project")
+            all_projects = bool(arguments.get("all_projects", False))
             fmt = arguments.get("format", "json")
             include_superseded = bool(arguments.get("include_superseded", False))
             current_project = _detect_project()
@@ -457,8 +487,16 @@ def run_server(store_path: Path | None = None) -> None:
             if project_filter:
                 mnemonics = [m for m in mnemonics if m.project == project_filter]
 
+            # Filter-by-default: scope to the current project family + global
+            # unless the caller hard-filtered a project or asked for the
+            # whole store. Scoping happens inside the scorer so IDF is
+            # computed over the scoped corpus.
+            scope = None
+            if not project_filter and not all_projects:
+                scope = current_project
             results = bm25_score(query, mnemonics, top_k=top_k,
-                                 boost_project=current_project)
+                                 boost_project=current_project,
+                                 scope_project=scope)
 
             if not results:
                 from .project import same_project_family
@@ -575,12 +613,20 @@ def run_server(store_path: Path | None = None) -> None:
             body = arguments.get("body")
             tags = arguments.get("tags", [])
             priority = int(arguments.get("priority", 2))
-            # project: explicit value wins; empty string = deliberately global;
-            # absent = the workspace this server is running in.
+            # project: explicit value wins; empty string = deliberately global
+            # (applies everywhere); absent = the workspace this server is
+            # running in. Detection failing must NEVER silently produce a
+            # global memory — the save is quarantined under `_unknown`
+            # instead, and the response says so.
+            from .project import UNKNOWN_PROJECT
+            quarantined = False
             if "project" in arguments:
                 project = (arguments.get("project") or "").strip() or None
             else:
                 project = _detect_project()
+                if project is None:
+                    project = UNKNOWN_PROJECT
+                    quarantined = True
 
             existing = repo.get(slug)
             now = datetime.now(timezone.utc)
@@ -630,6 +676,14 @@ def run_server(store_path: Path | None = None) -> None:
                 out["supersedes"] = sup_list
             if rel_list:
                 out["related"] = rel_list
+            if quarantined:
+                warnings.append(
+                    "project could not be determined — memory quarantined "
+                    f"under '{UNKNOWN_PROJECT}' (it will not surface in any "
+                    "project's recall). Pass project explicitly (a label, or "
+                    "\"\" for global), or run from the project directory; "
+                    "relabel existing ones with `memgit doctor --relabel`."
+                )
             if warnings:
                 out["warnings"] = warnings
             return [TextContent(type="text", text=json.dumps(out, indent=2))]

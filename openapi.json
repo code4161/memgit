@@ -16,7 +16,7 @@
       "post": {
         "operationId": "search_memories",
         "summary": "Search memories by relevance",
-        "description": "Search the persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated before, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by BM25 relevance \u2014 only what matters, not everything.",
+        "description": "Search the persistent memory store for facts, rules, and lessons relevant to the current task. CALL THIS at the start of every session, before answering questions about past work, before applying preferences the user may have stated before, or whenever you are unsure whether you have prior context on a topic. Returns memories ranked by BM25 relevance \u2014 only what matters, not everything. SCOPED BY DEFAULT: results come from the current project's family plus global (project-less) memories; pass all_projects=true to search the entire store (each hit then carries its 'project' label), or project=<label> to hard-filter one specific project.",
         "requestBody": {
           "required": true,
           "content": {
@@ -55,6 +55,15 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Also score memories that a newer memory supersedes (hidden by default)."
+                  },
+                  "project": {
+                    "type": "string",
+                    "description": "Hard-filter to exactly one project's memories. Usually unnecessary \u2014 searches are already scoped to the current project's family + global memories."
+                  },
+                  "all_projects": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Search the ENTIRE store instead of the default scope (current project family + global). Every hit carries its 'project' label."
                   }
                 }
               }
@@ -471,6 +480,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "project": {
+            "type": "string",
+            "description": "Project this memory belongs to; absent = explicitly global (applies everywhere); '_unknown' = quarantined unknown provenance."
           }
         }
       }

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0] — 2026-07-19
+
+Project isolation done right. A cross-project audit found the boundary was a *nudge*, not a wall: search and recall only **boosted** the current project, so any strong keyword match leaked one client's memories into another's session; a save whose workspace couldn't be detected silently became global; and the installed Stop hook's `cd <store> &&` prefix meant every background sync ran *as the store's own project* — which is why core auto-promotion never fired in production. 0.7.0 makes recall **filter-by-default** (current project family + explicitly-global, nothing else), makes unknown provenance loud instead of silently global, and ships the maintenance surfaces (`doctor`, cache GC, honest stats) a store needs after months of real use.
+
+### Added
+- **Filter-by-default recall + search** — `search_memories` (MCP), `memgit search`, the prompt-recall hook, and the resume digest's recent/critical/checkpoint/depth-hint pools are all **scoped** to the current project's family plus explicitly-global memories. BM25 IDF is computed over the scoped corpus, so a foreign project's vocabulary can't distort ranking. Widen deliberately: `all_projects: true` / `--all-projects` searches the whole store (every hit carries its `project` label); the existing `project` parameter stays a hard filter. Resume checkpoints are scoped too — a checkpoint survives only if a slug it touched resolves to a family-or-global memory, so a session never opens with another project's commit log.
+- **Explicit-global vs `_unknown` quarantine** — `project=None` now MEANS "applies everywhere" (set with the new `memgit add --global`, or `project: ""` over MCP/HTTP). A save whose project cannot be detected is never silently global: it's quarantined under `_unknown`, the save response/output says so, `list` marks it `[?project]`, `lint` flags it, and it surfaces in no project's recall (`_unknown` family-matches nothing — not even itself) until relabeled.
+- **One detection path** (`project.detect_project`) shared by the MCP server, CLI, and hooks: explicit caller value > `MEMGIT_PROJECT` > hook-payload cwd > `CLAUDE_PROJECT_DIR` > process cwd. The MCP server re-derives the label **per call** (envs win), keeping the startup cwd only as a fallback.
+- **`memgit doctor`** — store hygiene in one place. Bare: a report of quarantined + explicitly-global memories grouped by tag, stale session-cache files, and usage-ledger entries whose memory no longer exists. `--relabel mapping.json` bulk re-projects memories (`{"slug": "Label" | ""}`) preserving timestamps and every other field, committed ONCE as `doctor: relabel N memories`; `--prune-usage <slug>`, `--clean-caches`, `--prune-session <id>` repair exactly what the report names.
+- **Session-cache GC** — `memgit gc` (and, best-effort, the end of every `sync`) deletes per-session cache files older than 30 days under `.memgit/cache/{recall,recall-hints,ctx-recall,stop-guard}`.
+- **Resume digest hard budget** — the SessionStart injection is capped at 9,500 chars; over budget, sections trim in a fixed order (recent 10→5, checkpoints 5→3, critical text →160 chars, index topics 8→5, recent 5→3). The core operating guide body and the status board are never trimmed.
+- **`MEMGIT_STORE` env** — when set, it is the *only* store-discovery candidate (tests point it at a tmp path so the suite can never touch a live store).
+
+### Fixed
+- **Stop-hook `cd <store>` bug** — the `memgit setup hooks` template prefixed the sync command with `cd <store> && `, poisoning every cwd-derived project label; the background sync always "ran in" the store's own project, so core auto-promotion never triggered for real projects. The prefix is gone (`memgit sync` finds the default store from any cwd), and the auto-core path additionally refuses to ever create/refresh a core guide *for the store itself* or deliver rule files into it.
+- **Hook/MCP binary resolution works for any install method** — setup resolves, in order: the entry point actually running it (`sys.argv[0]`, only when its basename is `memgit`/`memgit.exe`), `shutil.which("memgit")`, then the `<python> -m memgit.cli` form — and writes the resolved absolute path (quoted) into every hook command. A bare `pytest`/`python` argv0 can no longer be registered as the memgit binary.
+- **Gemini CLI delivery was inert** — `.gemini/memgit.md` is a file Gemini CLI never loads (only `GEMINI.md` is auto-loaded, and nothing set `context.fileName`). The Gemini target is now a marker-delimited block in the project's `GEMINI.md` (same mechanism as Codex's `AGENTS.md`, user content untouched, 32k cap), and the old inert `.gemini/memgit.md` is deleted on sync.
+- **`memgit stats` no longer fabricates savings** — the simulated "dump all" strawman, the "+critical overhead" line, the 10-sessions/week weekly/annualised extrapolations, and GPT-4o pricing are gone. What remains is measured or labeled: full-corpus token size, the resume digest counted from a real render, a labeled recall-block estimate (top-3 rules ≈ chars/4), and one comparison line: per-session injected vs full-store load.
+- **Seeded skill descriptions no longer truncated** — `core seed`'s frontmatter reader now joins folded/literal YAML scalars (`>`, `>-`, `|`) and plain multi-line values into one sentence instead of keeping only the first indented line.
+
+### Channels
+- Chocolatey is unblocked: 0.6.2 pushed successfully on 2026-07-19 after the account approval (the 403 that had stalled every release since 0.1.5 is resolved).
+
 ## [0.6.2] — 2026-07-13
 
 ### Fixed

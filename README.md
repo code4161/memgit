@@ -34,9 +34,9 @@ You've probably already tried both. Here's why they hit a ceiling:
 
 ---
 
-## Proof — token savings you can measure
+## Proof — context costs you can measure
 
-Run this on your own store to see the actual numbers:
+Run this on your own store to see the actual numbers (measured where possible; estimates labeled):
 
 ```
 $ memgit stats
@@ -44,20 +44,17 @@ $ memgit stats
   Total memories:   108   (41 feedback · 23 user · 19 project · 12 reference · 8 convention · 5 lesson)
   Priority:          3 critical · 67 medium · 38 low
 
-  Token cost comparison:
-  ┌─────────────────────────────────────┬──────────────────┬───────────────────┬─────────────────────┐
-  │ Approach                            │ Tokens/session   │ vs full load      │ $/session (GPT-4o)  │
-  ├─────────────────────────────────────┼──────────────────┼───────────────────┼─────────────────────┤
-  │ claude.md / dump all memories       │ 12,840           │ 100%  baseline    │ $0.0321             │
-  │ memgit search (BM25 top-8)          │ 640              │ 5%  (95% savings) │ $0.0016             │
-  └─────────────────────────────────────┴──────────────────┴───────────────────┴─────────────────────┘
+  Context footprint  (measured where possible; estimates labeled)
 
-  Weekly savings (10 sessions/week):
-    Tokens saved:   122,000/week
-    Cost saved:     $0.31/week  →  $15.86/year  (at GPT-4o input pricing, $2.50/M)
+  Surface                                             Tokens
+  Full store (every memory as context)                12,840
+  Resume digest  (measured render)                       540
+  Recall block  (estimate: top-3 rules ≈ chars/4)        ~60
+
+  per-session injected ≈ 600 tokens (estimate) vs 12,840 tokens if the full store were loaded
 ```
 
-**Why such a big difference?** claude.md loads *all* context every session. memgit uses BM25 relevance scoring — it loads *only the 8 memories most relevant to the current session*, not everything you've ever recorded.
+**Why such a big difference?** claude.md loads *all* context every session. memgit injects a bounded resume digest plus BM25-matched recall — *only what is relevant to this session*, not everything you've ever recorded. The digest is measured by actually rendering it, and the store total is the real corpus size; nothing here is a simulated benchmark.
 
 ---
 
@@ -121,9 +118,11 @@ brew tap code4161/tap && brew install memgit
 
 **Windows:**
 ```powershell
+choco install memgit
+# or
 pip install memgit
 ```
-(`choco install memgit` is not live yet — the Chocolatey package is not on community.chocolatey.org. Use pip until it lands.)
+(The Chocolatey package is live on community.chocolatey.org; newly pushed versions can take a few days to clear moderation — `pip install memgit` always has the latest.)
 
 **Any AI tool config (no Python needed — npx auto-installs on first run):**
 ```json
@@ -164,7 +163,7 @@ memgit onboard          # mines the repo, prints the bootstrap brief
 
 `onboard` first extracts a **repo digest** deterministically — git history (recent commit subjects, hot files/directories by churn, authors, branch, tags), detected stack from manifests, and the docs worth reading — using bounded, read-only probes that stay near-instant even on huge repositories. The brief then tells your AI agent exactly what to do with it: read only the listed files (no tree crawling), extract 10–20 durable facts (purpose, architecture, conventions, current state, gotchas), save each as a typed memory, and checkpoint the seed set. Paste it into a session — or don't: if the AI searches memory in a project that has none, the MCP server itself replies with the bootstrap instructions instead of a bare "no results."
 
-Memories are **project-scoped**: each carries the workspace it belongs to, searches boost the project you're standing in (global rules still surface), and the resume digest leads with *your current project's* recent work — not whatever repo you touched last night.
+Memories are **project-scoped, filter-by-default** (v0.7.0): each carries the workspace it belongs to, and searches, recall injections, and the resume digest (recent memories, checkpoints, depth hints) are **filtered** to the current project's family plus explicitly-global memories — another project's content never leaks in. Widen deliberately with `memgit search --all-projects` / `all_projects: true` (every hit then carries its `project` label), or hard-filter one project with `--project`. A memory with no project is **explicitly global** (applies everywhere): save one with `memgit add --global` or `project: ""`. A save whose project *cannot be determined* is never silently global — it's quarantined under `_unknown` (visible in `list` as `[?project]`, flagged by `lint`, surfaced nowhere) until you relabel it with `memgit doctor --relabel`.
 
 ---
 
@@ -255,7 +254,7 @@ The tool descriptions teach the AI **judgment** — "does this request depend on
 
 A project's hardest onboarding problem isn't *what* it does — it's *how to work in it*: which skill to invoke, which command to run, which tool to reach for. That lives in a `CLAUDE.md` or a skills folder the AI host may or may not be configured to read. memgit carries it for you.
 
-`memgit core seed` distills a compact operating guide from the project's existing skills + rule files. `memgit core sync` writes it into **every AI host's own rules surface** as a dedicated, memgit-owned file — `.claude/rules/memgit.md`, `.cursor/rules/memgit.mdc`, `.windsurf/rules/memgit.md`, `.clinerules/`, `.roo/rules/`, `.continue/rules/`, `.gemini/`, and a marker-block in Codex's `AGENTS.md`. It's **additive only** — memgit never touches your own config or content — and injected at session start, so any tool knows how to work in the project even when its native setup is missing.
+`memgit core seed` distills a compact operating guide from the project's existing skills + rule files. `memgit core sync` writes it into **every AI host's own rules surface** as a dedicated, memgit-owned file — `.claude/rules/memgit.md`, `.cursor/rules/memgit.mdc`, `.windsurf/rules/memgit.md`, `.clinerules/`, `.roo/rules/`, `.continue/rules/` — and marker-delimited blocks in the shared `GEMINI.md` (Gemini CLI auto-loads only that file) and Codex's `AGENTS.md`. It's **additive only** — memgit never touches your own config or content — and injected at session start, so any tool knows how to work in the project even when its native setup is missing.
 
 And it **learns**: a sidecar usage ledger tracks which memories actually get recalled, and the most-used ones are auto-promoted as pointers into the guide over time (budget-capped, decaying, and always subordinate to the repo's own rules — it never restates or overrides them). Drifted? `memgit core heal` rebuilds it.
 
@@ -279,14 +278,14 @@ Measured across 289 real sessions: injected recall reached ~59% of them, but onl
 # Core (git-like)
 memgit init                       # initialize store (auto-detects best path)
 memgit onboard                    # bootstrap brief for an existing codebase
-memgit add <slug> <rule>          # stage a memory (--body detail, --project scope, --supersedes old-slug)
+memgit add <slug> <rule>          # stage a memory (--body detail, --project scope, --global everywhere, --supersedes old-slug)
 memgit commit -m "message"        # checkpoint current state
 memgit log                        # history
 memgit diff [sha1] [sha2]         # what changed
 memgit show <slug>                # display a memory
 memgit remove <slug>              # remove from active index (history preserved)
 memgit status                     # staged changes
-memgit search <query>             # BM25 relevance search
+memgit search <query>             # BM25 search, scoped to this project + global (--all-projects to widen)
 memgit rollback <ref>             # restore state to a checkpoint (HEAD~N or SHA)
 memgit resume                     # where we left off — session-start digest
 memgit merge <thread>             # three-way merge a thread into the current one
@@ -300,9 +299,11 @@ memgit core heal                  # self-repair a guide that has drifted
 
 # Scale & proof
 memgit squash                     # compress old history (archives what it collapses)
-memgit gc                         # reclaim disk: sweep unreachable objects
-memgit stats                      # token savings + disk usage
-memgit lint                       # validate all memories
+memgit gc                         # reclaim disk: sweep unreachable objects + stale session caches
+memgit stats                      # measured context costs + disk usage
+memgit doctor                     # hygiene report: quarantined/_unknown memories, stale caches, orphaned usage
+memgit doctor --relabel map.json  # bulk re-project memories ({"slug": "Label" | ""}); one checkpoint
+memgit lint                       # validate all memories (flags unknown provenance)
 memgit fsck                       # verify store integrity
 
 # Import / export
@@ -436,7 +437,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] `memgit gc` — space reclamation (mark-and-sweep, lossless squash archive)
 - [x] Multi-agent write safety — store lock, auto-merge commits, `memgit merge`
 - [x] PyPI + Homebrew (tap) + npm published (v0.1.5)
-- [ ] Chocolatey (not yet live on community.chocolatey.org)
+- [x] Chocolatey — live on community.chocolatey.org (`choco install memgit`)
 - [x] Interactive setup wizard (`memgit setup`)
 - [x] Smart `memgit init` (auto-detects tool, no path needed)
 - [x] Lossless memories — full `body` alongside the compact rule (v0.3.0)
