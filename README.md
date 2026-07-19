@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-245%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-294%20passing-brightgreen)](tests/)
 
 ---
 
