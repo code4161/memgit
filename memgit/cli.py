@@ -574,12 +574,33 @@ def resume(checkpoints, recent, plain, fmt_json, project):
         project = detect_project()
     ctx = repo.resume_context(checkpoints=checkpoints, recent=recent, project=project)
 
+    # Core-guide dedup: if this host already loads the guide from an always-on
+    # rules file it delivered (e.g. .claude/rules/memgit.md), don't re-inject
+    # the same body into the digest — the session would pay for it twice.
+    if ctx.get('core_memories'):
+        try:
+            from .delivery import delivered_core_files
+            delivered = delivered_core_files(Path.cwd())
+            if delivered:
+                ctx['core_delivered'] = str(delivered[0])
+        except Exception:
+            pass  # detection is best-effort; never break the session-start digest
+
     if fmt_json:
         print(_j.dumps(ctx, indent=2, default=str))
         return
 
     if plain:
-        print(_format_resume_plain(ctx))
+        text = _format_resume_plain(ctx)
+        print(text)
+        # Metrics: the session-start digest is the biggest recurring spend —
+        # record its measured token cost (this is the hook path).
+        try:
+            from .metrics import record_injection
+            from .tokens import count_tokens
+            record_injection(repo, 'digest', count_tokens(text))
+        except Exception:
+            pass
         return
 
     console.print(f'\n[bold cyan]memgit resume[/bold cyan] — thread [cyan]{ctx["thread"]}[/cyan] '
@@ -601,8 +622,10 @@ def resume(checkpoints, recent, plain, fmt_json, project):
         console.print('[bold]Status board (live entity state):[/bold]')
         for m in ctx['tracker_memories']:
             ts = m['timestamp'].strftime('%m-%d')
+            age = _tracker_age_days(m['timestamp'])
+            stale = f' [yellow]⚠ {age}d[/yellow]' if age >= STATUS_STALE_DAYS else ''
             rule = m['rule'][:80] + '..' if len(m['rule']) > 80 else m['rule']
-            console.print(f'  [red]●[/red] [cyan]{m["slug"]}[/cyan] [dim](upd {ts})[/dim] {rule}')
+            console.print(f'  [red]●[/red] [cyan]{m["slug"]}[/cyan] [dim](upd {ts}){stale}[/dim] {rule}')
         console.print()
 
     console.print('[bold]Last checkpoints:[/bold]')
@@ -634,6 +657,17 @@ def resume(checkpoints, recent, plain, fmt_json, project):
 #: Hard character budget for the injected resume digest (~2.4k tokens). Paid
 #: at the start of EVERY session — past this, sections trim in a fixed order.
 RESUME_BUDGET_CHARS = 9_500
+
+#: A status-board tracker not re-saved in this many days is flagged as possibly
+#: stale — trackers are only as fresh as their last write, so an old one may
+#: lag the files it describes.
+STATUS_STALE_DAYS = 14
+
+
+def _tracker_age_days(ts) -> int:
+    """Whole days since a tracker was last updated (tz-safe)."""
+    now = datetime.now(ts.tzinfo) if getattr(ts, 'tzinfo', None) else datetime.now()
+    return max(0, (now - ts).days)
 
 
 def _format_resume_plain(ctx: dict) -> str:
@@ -689,12 +723,21 @@ def _render_resume_plain(ctx: dict) -> str:
     if ctx.get('core_memories'):
         lines.append('')
         lines.append('## Core operating guide — always apply')
-        lines.append('(memgit-managed navigation aid. If this conflicts with the '
-                     "repo's own CLAUDE.md / AGENTS.md / rules, THOSE win — not policy.)")
-        for m in ctx['core_memories']:
-            body = (m.get('body') or m['rule']).rstrip()
-            lines.append('')
-            lines.append(body)
+        if ctx.get('core_delivered'):
+            # Host already loads the guide from its own always-on rules file —
+            # point at it instead of paying for the whole body a second time.
+            lines.append(
+                "(Loaded in full from this host's rules file "
+                f'{ctx["core_delivered"]} — not duplicated here. If it '
+                "conflicts with the repo's own CLAUDE.md / AGENTS.md / rules, "
+                'THOSE win — not policy.)')
+        else:
+            lines.append('(memgit-managed navigation aid. If this conflicts with the '
+                         "repo's own CLAUDE.md / AGENTS.md / rules, THOSE win — not policy.)")
+            for m in ctx['core_memories']:
+                body = (m.get('body') or m['rule']).rstrip()
+                lines.append('')
+                lines.append(body)
     # Status board: live entity state. Rendered right after the guide because
     # orientation ("what is the CURRENT state of things") is worth more than
     # history. The freshness stamp is what tells the model to trust or
@@ -702,12 +745,15 @@ def _render_resume_plain(ctx: dict) -> str:
     if ctx.get('tracker_memories'):
         lines.append('')
         lines.append('## Status board — live entity state '
-                     '(memgit is authoritative; files may lag)')
+                     '(memgit-tracked; re-verify a line against the files if it '
+                     'looks stale)')
         for m in ctx['tracker_memories']:
-            ts = m['timestamp'].strftime('%m-%d')
-            lines.append(f'- {m["slug"]} (upd {ts}): {clip(m["rule"], 160)}')
+            stamp = m['timestamp'].strftime('%m-%d')
+            age = _tracker_age_days(m['timestamp'])
+            stale = f' ⚠ {age}d old' if age >= STATUS_STALE_DAYS else ''
+            lines.append(f'- {m["slug"]} (upd {stamp}{stale}): {clip(m["rule"], 160)}')
         lines.append('(State changed? Update the tracker: save_memory with the '
-                     'same slug.)')
+                     'same slug. ⚠ = not updated recently, may lag the files.)')
     st = ctx['staged']
     if st['new'] or st['updated'] or st['removed']:
         lines.append('')
@@ -732,7 +778,8 @@ def _render_resume_plain(ctx: dict) -> str:
             # flag memories from OTHER projects so the agent doesn't conflate them
             other = (f' [{m["project"]}]'
                      if m.get('project') and m['project'] != ctx.get('project') else '')
-            lines.append(f'- {m["slug"]} ({m["type"]}, {ts}){other}: {clip(m["rule"], 160)}')
+            unv = ' ⚠unverified' if m.get('unverified') else ''
+            lines.append(f'- {m["slug"]} ({m["type"]}, {ts}){other}{unv}: {clip(m["rule"], 160)}')
     if ctx['critical_memories']:
         lines.append('')
         lines.append('## Critical rules — always apply')
@@ -769,8 +816,9 @@ def _render_resume_plain(ctx: dict) -> str:
                                        for tag, n in ctx['entity_index']))
         lines.append('(each is one call away: search_memories("<topic>", top_k=10))')
     lines.append('')
-    lines.append('(This digest is a teaser, not the memory. Trust the status board '
-                 'over files for entity state; check work-in-flight and the last '
+    lines.append('(This digest is a teaser, not the memory. The status board is the '
+                 'tracked entity state — trust a fresh line, but re-verify any ⚠ '
+                 'stale one against the files; check work-in-flight and the last '
                  'checkpoints before assuming state. Anything deeper: '
                  'search_memories("<topic from the index above>").)')
     return '\n'.join(lines)
@@ -1141,11 +1189,16 @@ def list_cmd(type_filter, priority, project_filter, toon):
         rule_preview = m.rule[:58] + '..' if len(m.rule) > 58 else m.rule
         if m.slug in hidden:
             rule_preview = '⊘ ' + rule_preview
+        if m.unverified:
+            rule_preview = '⚠ ' + rule_preview
         table.add_row(m.slug, m.type_code, p_str, Text(proj), rule_preview)
 
     console.print(table)
     shown_hidden = sum(1 for m in mnemonics if m.slug in hidden)
     hid_note = f' · {shown_hidden} superseded (⊘)' if shown_hidden else ''
+    unv_n = sum(1 for m in mnemonics if m.unverified)
+    hid_note += (f' · {unv_n} unverified (⚠ — confirm with `memgit verify`)'
+                 if unv_n else '')
     unknown_n = sum(1 for m in mnemonics if m.project == UNKNOWN_PROJECT)
     unk_note = (f' · {unknown_n} unknown provenance ([?project] — '
                 f'relabel with `memgit doctor`)') if unknown_n else ''
@@ -1397,6 +1450,13 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
         scope = current_project
     results = bm25_score(query, mnemonics, top_k=top,
                          boost_project=current_project, scope_project=scope)
+
+    # Metrics: credit a depth hint if this search followed one (conversion).
+    try:
+        from .metrics import record_search
+        record_search(repo, query)
+    except Exception:
+        pass
 
     if not results:
         console.print('[dim]No results.[/dim]')
@@ -1683,9 +1743,15 @@ def stats(fmt_json):
     prio_str = f"{prio.get(3, 0)} critical · {prio.get(2, 0)} medium · {prio.get(1, 0)} low"
 
     full_tok = s['full_tokens']
-    resume_tok = s['resume_digest_tokens']
-    recall_tok = s['recall_block_tokens_est']
     injected_tok = s['injected_per_session_tokens_est']
+    core_rulefile_tok = s.get('core_guide_rulefile_tokens', 0)
+    floor_tok = s.get('injected_per_session_tokens_floor', injected_tok)
+    # Show the digest as actually injected: when the core guide is delivered as
+    # an always-on rules file it's collapsed out of the digest and counted once
+    # on its own row, so the rows sum cleanly to the floor.
+    resume_tok = (s.get('resume_digest_deduped_tokens', s['resume_digest_tokens'])
+                  if core_rulefile_tok else s['resume_digest_tokens'])
+    recall_tok = s['recall_block_tokens_est']
 
     ck_count = s['checkpoint_count']
     first_ts = s['first_checkpoint_ts'].strftime('%Y-%m-%d') if s['first_checkpoint_ts'] else '—'
@@ -1727,13 +1793,18 @@ def stats(fmt_json):
 
     tok.add_row('Full store (every memory as context)', f'{full_tok:,}')
     tok.add_row('Resume digest  [dim](measured render)[/dim]', f'{resume_tok:,}')
+    if core_rulefile_tok:
+        tok.add_row('Core guide — always-on rules file  '
+                    '[dim](measured; host loads it every session)[/dim]',
+                    f'{core_rulefile_tok:,}')
     tok.add_row('Recall block  [dim](estimate: top-3 rules ≈ chars/4)[/dim]',
                 f'~{recall_tok:,}')
     console.print(tok)
 
-    console.print(f'  [dim]per-session injected ≈ [/dim]{injected_tok:,}'
-                  f'[dim] tokens (estimate) vs [/dim]{full_tok:,}'
-                  f'[dim] tokens if the full store were loaded[/dim]')
+    console.print(f'  [dim]per-session floor ≈ [/dim]{floor_tok:,}'
+                  f'[dim] tokens (deduped digest + always-on rules file + recall). '
+                  f'Full store would be [/dim]{full_tok:,}[dim] tokens — but that is '
+                  f'not a real alternative; nobody loads the whole store.[/dim]')
 
     console.print()
     has_flat = (repo.path.parent / 'memories').exists()
@@ -1742,6 +1813,118 @@ def stats(fmt_json):
     flat_status = '[green]✓[/green]' if has_flat else '[yellow]–[/yellow] (run `memgit git export`)'
     console.print(f'[dim]Git sync:[/dim]  {git_status}   [dim]Flat memories/:[/dim] {flat_status}')
     console.print()
+
+
+@cli.command()
+@click.option('--json', 'fmt_json', is_flag=True,
+              help='Machine-readable output (token-cheap for AI callers)')
+@click.option('--reset', is_flag=True, help='Wipe the metrics ledger and exit')
+def metrics(fmt_json, reset):
+    """Measured context cost + depth-advertising conversion — showable on demand.
+
+    Every token figure is MEASURED (each surface tokenized as it was injected),
+    not estimated. There is deliberately NO "tokens saved" number: a real
+    counterfactual (a file-read avoided) is unmeasurable, so inventing one would
+    be dishonest. Instead this reports whether depth hints get acted on
+    (advertised → searched) — the honest signal that memory is helping, not just
+    being paid for. Recording starts once the v0.8 hooks run, so a fresh ledger
+    is expected right after upgrade.
+    """
+    repo = _require_repo()
+    from .metrics import summary, reset_metrics
+    if reset:
+        reset_metrics(repo)
+        console.print('[yellow]metrics ledger wiped.[/yellow]')
+        return
+
+    m = summary(repo)
+    s = repo.stats()
+    floor = s.get('injected_per_session_tokens_floor')
+
+    if fmt_json:
+        import json as _j
+        m['per_session_floor_tokens'] = floor
+        print(_j.dumps(m, indent=2))
+        return
+
+    from rich.rule import Rule
+    from rich import box
+
+    console.print()
+    console.print(Rule('[bold cyan]memgit metrics[/bold cyan]  '
+                       '[dim]measured, not estimated[/dim]'))
+    console.print()
+
+    if floor is not None:
+        console.print(f'[bold]Per-session floor[/bold]  ~{floor:,} tokens '
+                      '[dim](deduped digest + always-on rules file + recall; '
+                      'see `memgit stats`)[/dim]')
+        console.print()
+
+    inj = m['injections']
+    if m['total_injections'] == 0:
+        console.print('[dim]No injections recorded yet — the metrics ledger '
+                      'fills as the hooks fire this version. Check back after a '
+                      'few sessions.[/dim]')
+        console.print()
+    else:
+        t = Table(box=box.SIMPLE, header_style='bold')
+        t.add_column('Injected surface', min_width=20)
+        t.add_column('Fired', justify='right')
+        t.add_column('Total tok', justify='right')
+        t.add_column('Avg tok', justify='right')
+        labels = {'digest': 'Session-start digest', 'prompt_recall': 'Prompt recall',
+                  'ctx_recall': 'Context recall', 'stop_guard': 'Stop-guard'}
+        for k in ('digest', 'prompt_recall', 'ctx_recall', 'stop_guard'):
+            e = inj[k]
+            t.add_row(labels[k], f'{e["count"]:,}', f'{e["tokens"]:,}',
+                      f'{e["avg_tokens"]:,}')
+        t.add_row('[bold]All surfaces[/bold]', f'[bold]{m["total_injections"]:,}[/bold]',
+                  f'[bold]{m["total_injected_tokens"]:,}[/bold]', '')
+        console.print(t)
+        console.print()
+
+    adv, acted = m['advertised_total'], m['acted_total']
+    console.print('[bold]Depth-advertising conversion[/bold]  '
+                  '[dim](the honest "is it helping" signal — no fabricated '
+                  'savings %)[/dim]')
+    if adv == 0:
+        console.print('  [dim]No depth hints advertised yet.[/dim]')
+    else:
+        pct = m['conversion_pct']
+        console.print(f'  {acted:,} of {adv:,} advertised hints were acted on '
+                      f'(searched within {30} min) — [bold]{pct}%[/bold]')
+    console.print()
+
+
+@cli.command()
+@click.argument('slug')
+@click.option('--undo', is_flag=True, help='Demote back to candidate (mark unverified)')
+def verify(slug, undo):
+    """Promote an unverified (candidate) memory to trusted — or --undo to demote.
+
+    Candidates (content imported, team-synced, or auto-flagged as
+    instruction-shaped) are kept OUT of high-authority injection until
+    confirmed. This is the CLI path; an agent promotes in-session with the
+    verify_memory tool.
+    """
+    repo = _require_repo()
+    m = repo.get(slug)
+    if m is None:
+        console.print(f'[red]No memory with slug {slug!r}.[/red]')
+        raise SystemExit(1)
+    target = bool(undo)   # --undo => unverified True
+    if m.unverified == target:
+        console.print(f'[dim]{slug} is already '
+                      f'{"a candidate (unverified)" if target else "verified"}.[/dim]')
+        return
+    m.unverified = target
+    m.timestamp = datetime.now(timezone.utc)
+    m.sha = None
+    repo.add(m)
+    repo.commit(message=f'{"unverify" if target else "verify"}: {slug}')
+    console.print(f'[green]✓[/green] {slug} → '
+                  f'{"candidate (unverified)" if target else "verified / trusted"}')
 
 
 # ── squash ────────────────────────────────────────────────────────────────────
@@ -2215,9 +2398,31 @@ def _memgit_cmd() -> list[str]:
     return _memgit_base_cmd() + ['serve']
 
 
-def _mcp_server_entry() -> dict:
+#: Human host label → stable client slug stamped into each host's MCP config as
+#: MEMGIT_CLIENT, so a checkpoint written through that host is attributed to it
+#: (multi-writer legibility: which agent wrote what). The user is the operator
+#: everywhere — this is zero manual config, written by `memgit setup`.
+def _client_slug(label: str) -> Optional[str]:
+    l = (label or '').lower()
+    for needle, slug in (
+        ('claude code', 'claude-code'), ('claude desktop', 'claude-desktop'),
+        ('cursor', 'cursor'), ('windsurf', 'windsurf'), ('cline', 'cline'),
+        ('roo', 'roo'), ('continue', 'continue'), ('antigravity', 'antigravity'),
+        ('gemini', 'gemini'), ('codex', 'codex'),
+    ):
+        if needle in l:
+            return slug
+    return None
+
+
+def _mcp_server_entry(client: Optional[str] = None) -> dict:
     cmd = _memgit_cmd()
-    return {'command': cmd[0], 'args': cmd[1:]}
+    entry: dict = {'command': cmd[0], 'args': cmd[1:]}
+    if client:
+        # env is honored by every MCP host; the server reads MEMGIT_CLIENT to
+        # attribute checkpoints to the host that launched it.
+        entry['env'] = {'MEMGIT_CLIENT': client}
+    return entry
 
 
 def _write_json_safe(path: Path, data: dict) -> None:
@@ -2225,7 +2430,8 @@ def _write_json_safe(path: Path, data: dict) -> None:
     path.write_text(_json.dumps(data, indent=2) + '\n', encoding='utf-8')
 
 
-def _patch_mcp_servers(config_path: Path, dry_run: bool = False) -> str:
+def _patch_mcp_servers(config_path: Path, dry_run: bool = False,
+                       client: Optional[str] = None) -> str:
     """Upsert mcpServers.memgit in a JSON config file. Returns status string."""
     if config_path.exists():
         try:
@@ -2241,7 +2447,7 @@ def _patch_mcp_servers(config_path: Path, dry_run: bool = False) -> str:
 
     servers = data.setdefault('mcpServers', {})
     existing = servers.get('memgit')
-    entry = _mcp_server_entry()
+    entry = _mcp_server_entry(client)
 
     if existing == entry:
         return 'already registered'
@@ -2252,7 +2458,8 @@ def _patch_mcp_servers(config_path: Path, dry_run: bool = False) -> str:
     return 'updated' if existing else 'registered'
 
 
-def _patch_continue(config_path: Path, dry_run: bool = False) -> str:
+def _patch_continue(config_path: Path, dry_run: bool = False,
+                    client: Optional[str] = None) -> str:
     """Patch Continue.dev config.json which uses a list, not a dict."""
     if config_path.exists():
         try:
@@ -2262,7 +2469,7 @@ def _patch_continue(config_path: Path, dry_run: bool = False) -> str:
     else:
         data = {}
 
-    entry = _mcp_server_entry()
+    entry = _mcp_server_entry(client)
     entry['name'] = 'memgit'
 
     servers: list = data.setdefault('mcpServers', [])
@@ -2278,6 +2485,39 @@ def _patch_continue(config_path: Path, dry_run: bool = False) -> str:
     servers.append(entry)
     if not dry_run:
         _write_json_safe(config_path, data)
+    return 'registered'
+
+
+def _patch_codex_toml(config_path: Path, dry_run: bool = False,
+                      client: Optional[str] = None) -> str:
+    """Register memgit in Codex's TOML config — first-class, not import-dependent.
+
+    Codex co-owns `~/.codex/config.toml` and uses TOML (not JSON). To avoid
+    corrupting the user's config or clobbering host-written tool-approval
+    subsections (`[mcp_servers.memgit.tools.*]`), memgit only APPENDS a
+    `[mcp_servers.memgit]` block when none exists — it never rewrites an
+    existing one. New Codex users get wired by memgit itself; an existing setup
+    (e.g. mirrored from Claude Code) is left exactly as-is.
+    """
+    import re as _re
+    text = config_path.read_text(encoding='utf-8') if config_path.exists() else ''
+    if _re.search(r'(?m)^\s*\[mcp_servers\.memgit\]', text):
+        return 'already present (left untouched)'
+    cmd = _memgit_cmd()
+    args_toml = ', '.join(f'"{a}"' for a in cmd[1:])
+    block_lines = [
+        '', '# memgit — added by `memgit setup`; safe to edit or remove',
+        '[mcp_servers.memgit]',
+        f'command = "{cmd[0]}"',
+        f'args = [{args_toml}]',
+    ]
+    if client:
+        block_lines.append(f'env = {{ MEMGIT_CLIENT = "{client}" }}')
+    block = '\n'.join(block_lines) + '\n'
+    new = (text.rstrip() + '\n' + block) if text.strip() else block.lstrip('\n')
+    if not dry_run:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(new, encoding='utf-8')
     return 'registered'
 
 
@@ -2344,6 +2584,29 @@ def _all_targets():
             home / '.gemini' / 'settings.json',
             _patch_mcp_servers,
             home / '.gemini',
+        ),
+        (
+            # Codex (OpenAI) — TOML config, append-only patcher.
+            'Codex',
+            home / '.codex' / 'config.toml',
+            _patch_codex_toml,
+            home / '.codex',
+        ),
+        (
+            # Antigravity (Google) — standard JSON mcpServers schema. The
+            # `antigravity/` config dir is a symlink to `.gemini/config/`;
+            # writing through it is fine. Distinct from Gemini CLI's own
+            # settings.json (that entry above is NOT Antigravity's).
+            'Antigravity',
+            home / '.gemini' / 'antigravity' / 'mcp_config.json',
+            _patch_mcp_servers,
+            home / '.gemini' / 'antigravity',
+        ),
+        (
+            'Antigravity IDE',
+            home / '.gemini' / 'antigravity-ide' / 'mcp_config.json',
+            _patch_mcp_servers,
+            home / '.gemini' / 'antigravity-ide',
         ),
     ]
 
@@ -2431,7 +2694,7 @@ def _run_target(label: str, config_path: Path, patch_fn, dry_run: bool) -> None:
         return
 
     try:
-        status = patch_fn(config_path, dry_run=dry_run)
+        status = patch_fn(config_path, dry_run=dry_run, client=_client_slug(label))
         icon = '[green]✓[/green]' if 'registered' in status or 'already' in status else '[yellow]↻[/yellow]'
         note = ' [dim](dry run)[/dim]' if dry_run else ''
         console.print(f'{icon} {label}: {status}{note}')
@@ -2563,6 +2826,33 @@ def setup_gemini_cli(dry_run):
     """Register with Gemini CLI (~/.gemini/settings.json)."""
     path = Path.home() / '.gemini' / 'settings.json'
     _run_target('Gemini CLI', path, _patch_mcp_servers, dry_run)
+
+
+@setup.command('codex')
+@click.option('--dry-run', is_flag=True)
+def setup_codex(dry_run):
+    """Register with Codex (~/.codex/config.toml). Append-only; never rewrites
+    an existing [mcp_servers.memgit] section. Core guide ships via AGENTS.md
+    (`memgit core sync`)."""
+    path = Path.home() / '.codex' / 'config.toml'
+    _run_target('Codex', path, _patch_codex_toml, dry_run)
+
+
+@setup.command('antigravity')
+@click.option('--dry-run', is_flag=True)
+def setup_antigravity(dry_run):
+    """Register with Antigravity (~/.gemini/antigravity[-ide]/mcp_config.json).
+
+    Antigravity uses the standard JSON mcpServers schema (distinct from Gemini
+    CLI's settings.json). Both the IDE and CLI config paths are wired if present.
+    """
+    home = Path.home()
+    for label, path in (
+        ('Antigravity', home / '.gemini' / 'antigravity' / 'mcp_config.json'),
+        ('Antigravity IDE', home / '.gemini' / 'antigravity-ide' / 'mcp_config.json'),
+    ):
+        if path.exists() or path.parent.exists():
+            _run_target(label, path, _patch_mcp_servers, dry_run)
 
 
 #: substrings identifying a hook command as one of ours (any generation)

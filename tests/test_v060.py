@@ -295,13 +295,29 @@ class TestTrackers:
         assert "other-proj-status" not in slugs    # never leaks cross-project
 
     def test_plain_resume_renders_board_with_freshness(self, repo):
+        from datetime import datetime, timezone
         from memgit.cli import _format_resume_plain
+        # fresh tracker (now) → rendered without a stale flag
         repo.add(_mk("deploy-status", type_code="tr",
-                     rule="v2 shipped, awaiting CI"))
+                     rule="v2 shipped, awaiting CI",
+                     timestamp=datetime.now(timezone.utc)))
         text = _format_resume_plain(repo.resume_context())
         assert "## Status board" in text
-        assert "memgit is authoritative" in text
-        assert "deploy-status (upd 07-13): v2 shipped, awaiting CI" in text
+        # framing is staleness-aware, not blanket-authority
+        assert "re-verify" in text
+        assert "memgit is authoritative" not in text
+        assert "deploy-status" in text and "v2 shipped, awaiting CI" in text
+        assert "d old" not in text        # fresh line carries no stale marker
+
+    def test_plain_resume_flags_stale_tracker(self, repo):
+        from datetime import datetime, timedelta, timezone
+        from memgit.cli import _format_resume_plain, STATUS_STALE_DAYS
+        old = datetime.now(timezone.utc) - timedelta(days=STATUS_STALE_DAYS + 5)
+        repo.add(_mk("old-status", type_code="tr",
+                     rule="stale line", timestamp=old))
+        text = _format_resume_plain(repo.resume_context())
+        assert "old-status" in text
+        assert "⚠" in text               # aged tracker is flagged possibly-stale
 
     def test_no_trackers_no_board(self, repo):
         from memgit.cli import _format_resume_plain

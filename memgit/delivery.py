@@ -106,6 +106,28 @@ LEGACY_TARGET_FILES = [".gemini/memgit.md"]
 TARGETS_BY_LABEL = {t.label: t for t in TARGETS}
 
 
+def delivered_core_files(root: Path, home: Optional[Path] = None) -> list[Path]:
+    """Existing memgit-delivered core-guide files under `root`.
+
+    A host that already loads its always-on rules file (e.g. Claude Code reads
+    `.claude/rules/memgit.md`, Cursor `.cursor/rules/memgit.mdc`) is paying for
+    the core operating guide once per session already. The resume digest uses
+    this to avoid re-injecting the same body a second time — otherwise the
+    guide is charged twice every session. Only files that carry memgit's own
+    disclaimer/marker count, so a user's unrelated rule file never matches.
+    """
+    out: list[Path] = []
+    for t in TARGETS:
+        p = root / t.rel_path
+        try:
+            txt = p.read_text(encoding='utf-8') if p.is_file() else ''
+        except OSError:
+            continue
+        if txt and (_DISCLAIMER[:40] in txt or MARKER_START in txt):
+            out.append(p)
+    return out
+
+
 def is_present(target: Target, root: Path, home: Optional[Path] = None) -> bool:
     """A host counts as 'in use' if any detect signature exists in the project
     root or the user's home — so a Cursor user gets a project-local rule file

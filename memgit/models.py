@@ -28,6 +28,14 @@ class Mnemonic:
     supersedes: list[str] = field(default_factory=list)
     related: list[str] = field(default_factory=list)
     source: Optional[str] = None
+    #: Candidate/committed boundary: an unverified memory is content that hasn't
+    #: been confirmed by the operator (imported/team-synced bodies, or a save
+    #: whose text looked instruction-shaped). It is kept OUT of high-authority
+    #: injection (core guide, critical rules, status board) and flagged in
+    #: recall — it can be found, but never rides into context as trusted fact —
+    #: until promoted (`memgit verify <slug>` or re-saved verified). Defaults
+    #: False so every existing memory is trusted exactly as before.
+    unverified: bool = False
     sha: Optional[str] = None  # computed by store
 
 

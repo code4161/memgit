@@ -514,12 +514,61 @@ class TestHonestStats:
         repo.commit(message="seed")
         res = _invoke(["stats"], repo, monkeypatch)
         assert res.exit_code == 0, res.output
-        assert "per-session injected" in res.output
+        assert "per-session floor" in res.output
         assert "estimate" in res.output
         # the fabricated block is gone
         for phrase in ("Weekly savings", "Annualised", "GPT-4o",
                        "dump all memories"):
             assert phrase not in res.output
+
+    def test_stats_floor_counts_core_rulefile_once(self, repo, monkeypatch):
+        # a delivered core guide is an always-on per-session cost; the floor
+        # must include it (measured) without double-charging the digest copy.
+        repo.add(_mk("core-guide", type_code="co",
+                     rule="core", body="# Core operating guide\nlong body " * 40))
+        for i in range(3):
+            repo.add(_mk(f"m{i}", rule=f"rule {i}"))
+        repo.commit(message="seed")
+        s = repo.stats(project=None)   # force global scope (deterministic)
+        assert s["core_guide_rulefile_tokens"] > 0
+        # deduped digest drops the core body, so it's smaller than the full one
+        assert s["resume_digest_deduped_tokens"] <= s["resume_digest_tokens"]
+        assert s["injected_per_session_tokens_floor"] == (
+            s["resume_digest_deduped_tokens"] + s["core_guide_rulefile_tokens"]
+            + s["recall_block_tokens_est"])
+
+
+class TestCoreGuideDedup:
+    def test_delivered_core_files_detects_memgit_file(self, tmp_path):
+        from memgit.delivery import delivered_core_files, _DISCLAIMER
+        d = tmp_path / ".claude" / "rules"
+        d.mkdir(parents=True)
+        (d / "memgit.md").write_text(f"<!-- {_DISCLAIMER} -->\n\nbody",
+                                     encoding="utf-8")
+        found = delivered_core_files(tmp_path)
+        assert any(p.name == "memgit.md" for p in found)
+
+    def test_unrelated_rule_file_not_detected(self, tmp_path):
+        from memgit.delivery import delivered_core_files
+        d = tmp_path / ".claude" / "rules"
+        d.mkdir(parents=True)
+        (d / "memgit.md").write_text("just the user's own notes", encoding="utf-8")
+        assert delivered_core_files(tmp_path) == []
+
+    def test_render_collapses_core_when_delivered(self, repo):
+        from memgit.cli import _format_resume_plain
+        repo.add(_mk("core-guide", type_code="co", rule="core nav",
+                     body="UNIQUE_CORE_BODY_MARKER long content here"))
+        ctx = repo.resume_context()
+        # not delivered → full body is injected
+        assert "UNIQUE_CORE_BODY_MARKER" in _format_resume_plain(ctx)
+        # delivered as a host rules file → collapsed to a pointer, not duplicated
+        ctx2 = dict(ctx)
+        ctx2["core_delivered"] = "/x/.claude/rules/memgit.md"
+        out = _format_resume_plain(ctx2)
+        assert "UNIQUE_CORE_BODY_MARKER" not in out
+        assert "not duplicated here" in out
+        assert "/x/.claude/rules/memgit.md" in out
 
 
 class TestDoctor:

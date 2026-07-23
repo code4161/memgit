@@ -201,6 +201,7 @@ def _parse_mnemonic(
     body = project = None
     supersedes: list[str] = []
     related: list[str] = []
+    unverified = False
 
     for raw in lines:
         line = raw.strip()
@@ -224,6 +225,8 @@ def _parse_mnemonic(
                     related = [s.strip() for s in v.split(',') if s.strip()]
                 elif k == 'SRC':
                     source = v
+                elif k == 'UNV':
+                    unverified = v.strip() in ('1', 'true', 'True')
         elif ':' in line:
             # Split the RAW line: the serializer writes `KEY:value` with the
             # value's bytes intact, so stripping here would eat leading
@@ -278,6 +281,7 @@ def _parse_mnemonic(
         supersedes=supersedes,
         related=related,
         source=source,
+        unverified=unverified,
     )
 
 
@@ -323,6 +327,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             fields.append(('~SRC', m.source))
         if m.supersedes:
             fields.append(('~SUP', ','.join(sorted(m.supersedes))))
+        if m.unverified:
+            fields.append(('~UNV', '1'))
 
         for k, v in fields:
             if k == 'TAGS':
@@ -361,6 +367,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             lines.append(f'~REL:{",".join(m.related)}')
         if m.source:
             lines.append(f'~SRC:{_esc(m.source)}')
+        if m.unverified:
+            lines.append('~UNV:1')
 
     return '\n'.join(lines)
 

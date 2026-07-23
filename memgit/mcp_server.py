@@ -135,6 +135,10 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None,
         d["desc"] = m.desc
     if m.project:
         d["project"] = m.project
+    if m.unverified:
+        # surface candidate status on read so the agent knows not to trust it
+        # blindly (and can promote it with verify_memory)
+        d["unverified"] = True
     if include_body and m.body:
         d["body"] = m.body
     elif m.body:
@@ -425,8 +429,44 @@ def run_server(store_path: Path | None = None) -> None:
                                 "Slugs of related memories (cross-references, not replacement)."
                             ),
                         },
+                        "unverified": {
+                            "type": "boolean",
+                            "description": (
+                                "Mark this memory as a CANDIDATE (unconfirmed) — use for facts "
+                                "seeded from repo files, imported, or synced from another writer "
+                                "that you have not confirmed. Unverified memories are kept OUT of "
+                                "high-authority injection (core guide, critical rules, status "
+                                "board) and flagged in recall until promoted with verify_memory. "
+                                "Content that looks instruction-shaped is auto-marked unverified "
+                                "regardless of this flag."
+                            ),
+                        },
                     },
                     "required": ["slug", "rule"],
+                },
+            ),
+            Tool(
+                name="verify_memory",
+                description=(
+                    "Promote an UNVERIFIED (candidate) memory to trusted/committed after you "
+                    "have confirmed its content is a legitimate fact. Once verified, it can "
+                    "inject into high-authority context again. Use this to resolve the "
+                    "candidate/committed boundary in-session (the operator does not do it "
+                    "manually). Pass verified=false to demote a memory back to candidate."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slug": {"type": "string",
+                                 "description": "Slug of the memory to (un)verify."},
+                        "verified": {
+                            "type": "boolean",
+                            "description": "true = promote to trusted (default); "
+                                           "false = demote back to candidate.",
+                            "default": True,
+                        },
+                    },
+                    "required": ["slug"],
                 },
             ),
             Tool(
@@ -536,6 +576,13 @@ def run_server(store_path: Path | None = None) -> None:
                 record_hits(repo, [r.mnemonic.slug for r in results])
             except Exception:
                 pass
+            # Metrics: a search is the agent acting — credit any depth hint it
+            # followed (conversion proxy).
+            try:
+                from .metrics import record_search
+                record_search(repo, query)
+            except Exception:
+                pass
             return [TextContent(type="text", text=text)]
 
         elif name == "get_memory":
@@ -636,6 +683,16 @@ def run_server(store_path: Path | None = None) -> None:
                 slug, arguments.get("supersedes"), arguments.get("related"),
                 repo.list())
 
+            # Governance / candidate boundary: a memory is quarantined as
+            # `unverified` when the caller marks it so, OR when its text looks
+            # instruction-shaped (a prompt-injection vector once injected
+            # verbatim at high authority). Unverified content is kept out of the
+            # trusted surfaces (core guide, critical rules, status board) and
+            # flagged in recall until promoted with verify_memory.
+            from .sanitize import detect_injection
+            injection_hits = detect_injection(rule, body or "")
+            unverified = bool(arguments.get("unverified")) or bool(injection_hits)
+
             m = Mnemonic(
                 type_code=type_code,
                 slug=slug,
@@ -649,7 +706,21 @@ def run_server(store_path: Path | None = None) -> None:
                 project=project,
                 supersedes=sup_list,
                 related=rel_list,
+                unverified=unverified,
             )
+
+            # Conflict/duplicate detection (multi-writer legibility): flag an
+            # existing memory this one restates, unless the writer already
+            # linked it. Surfaced as a warning the agent resolves in-session —
+            # never a silent overwrite. Best-effort; never blocks the save.
+            conflicts: list = []
+            try:
+                from .links import find_conflicts
+                conflicts = find_conflicts(
+                    m, repo.list(),
+                    scope_project=(project if project != UNKNOWN_PROJECT else None))
+            except Exception:
+                conflicts = []
 
             repo.add(m)
             # Checkpoint immediately with real provenance. Relying on a
@@ -684,9 +755,64 @@ def run_server(store_path: Path | None = None) -> None:
                     "\"\" for global), or run from the project directory; "
                     "relabel existing ones with `memgit doctor --relabel`."
                 )
+            if conflicts:
+                cslugs = [c[0] for c in conflicts]
+                out["possible_conflicts"] = cslugs
+                warnings.append(
+                    "possible duplicate/conflict with existing memory: "
+                    + ", ".join(cslugs) + ". If this corrects them, re-save with "
+                    "supersedes=[...]; if merely related, related=[...]; if "
+                    "genuinely distinct, ignore this note."
+                )
+            if unverified:
+                out["unverified"] = True
+                if injection_hits:
+                    out["injection_flags"] = injection_hits
+                    warnings.append(
+                        "this content looks instruction-shaped ("
+                        + ", ".join(injection_hits) + ") and was saved as "
+                        "UNVERIFIED — it will NOT inject into trusted context "
+                        "(core guide / critical rules / status board) and is "
+                        "flagged in recall. If it is a legitimate fact, confirm "
+                        "it with verify_memory; otherwise delete it."
+                    )
+                else:
+                    warnings.append(
+                        "saved as UNVERIFIED (candidate) — kept out of "
+                        "high-authority injection until you confirm it with "
+                        "verify_memory."
+                    )
             if warnings:
                 out["warnings"] = warnings
             return [TextContent(type="text", text=json.dumps(out, indent=2))]
+
+        elif name == "verify_memory":
+            slug = (arguments.get("slug") or "").strip()
+            verified = bool(arguments.get("verified", True))
+            m = repo.get(slug)
+            if m is None:
+                return [TextContent(type="text",
+                                    text=f"Error: no memory with slug '{slug}'.")]
+            if m.unverified == (not verified):
+                return [TextContent(type="text", text=json.dumps({
+                    "status": "ok", "slug": slug,
+                    "unverified": m.unverified,
+                    "note": "already in that state — no change.",
+                }, indent=2))]
+            m.unverified = not verified
+            m.timestamp = datetime.now(timezone.utc)
+            m.sha = None  # force re-hash for the new content
+            repo.add(m)
+            ck = repo.commit(
+                message=f"{'verify' if verified else 'unverify'}: {slug}",
+                trigger="mcp_save")
+            return [TextContent(type="text", text=json.dumps({
+                "status": "ok",
+                "action": "verified" if verified else "demoted to candidate",
+                "slug": slug,
+                "unverified": m.unverified,
+                "checkpoint": (ck or "")[:8] or None,
+            }, indent=2))]
 
         elif name == "get_checkpoint_log":
             limit = int(arguments.get("limit", 5))

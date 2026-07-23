@@ -127,6 +127,56 @@ def validate_relations(slug: str, supersedes, related,
     return sup_list, rel_list, warnings
 
 
+def find_conflicts(new_m, existing: list[Mnemonic], scope_project=None,
+                   min_overlap: float = 0.45, top_k: int = 3) -> list[tuple[str, float]]:
+    """Live memories that likely DUPLICATE or CONFLICT with `new_m`.
+
+    memgit has no automatic conflict detection: supersession is explicit and a
+    concurrent write silently wins by recency. In a multi-writer store (several
+    agents/hosts sharing one memory) that hides genuine collisions. This is the
+    lightweight, operator-appropriate guard: on save, flag an existing memory
+    that RESTATES `new_m` — same topic (shares a tag) AND heavy rule-token
+    overlap (Jaccard >= min_overlap) — so it either duplicates or contradicts.
+    The save path surfaces these to the WRITING AGENT, which decides in-session
+    (supersede / relate / keep both). No silent overwrite, no manual-triage step.
+
+    Deliberately quiet (materiality): same-slug (an update), already-superseded,
+    and memories the writer already linked (supersedes/related) are excluded;
+    candidates are scoped to the same project family + global. A high token
+    Jaccard is required, so topical neighbours that merely share vocabulary do
+    NOT fire. Returns [(slug, overlap)] best-first.
+    """
+    from .scorer import _tokenize
+    from .project import project_affinity
+
+    new_tokens = set(_tokenize(new_m.rule or ''))
+    if not new_tokens:
+        return []
+    already = set(getattr(new_m, 'supersedes', []) or []) | set(
+        getattr(new_m, 'related', []) or [])
+    new_tags = {t.strip().lower() for t in (new_m.tags or []) if t.strip()}
+
+    out: list[tuple[str, float]] = []
+    for m in filter_active(existing):
+        if m.slug == new_m.slug or m.slug in already:
+            continue
+        if scope_project and m.project and project_affinity(m.project, scope_project) < 1:
+            continue
+        m_tags = {t.strip().lower() for t in (m.tags or []) if t.strip()}
+        # materiality: when both carry tags, require a shared topic
+        if new_tags and m_tags and not (new_tags & m_tags):
+            continue
+        m_tokens = set(_tokenize(m.rule or ''))
+        if not m_tokens:
+            continue
+        union = len(new_tokens | m_tokens)
+        overlap = len(new_tokens & m_tokens) / union if union else 0.0
+        if overlap >= min_overlap:
+            out.append((m.slug, round(overlap, 2)))
+    out.sort(key=lambda so: -so[1])
+    return out[:top_k]
+
+
 def normalize_slug_list(value) -> list[str]:
     """Coerce a user/LLM-supplied relation field into a clean slug list.
 

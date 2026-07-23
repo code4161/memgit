@@ -39,6 +39,10 @@ def default_store_candidates() -> list[Path]:
 
 
 #: A lock older than this is considered abandoned (crashed process) and broken.
+#: Sentinel: stats(project=_UNSET) means "auto-detect the project", so callers
+#: can still pass project=None to force a deliberately-global render.
+_UNSET = object()
+
 LOCK_STALE_SECONDS = 60.0
 #: How long a writer waits for the lock before giving up.
 LOCK_TIMEOUT_SECONDS = float(os.environ.get('MEMGIT_LOCK_TIMEOUT', '10'))
@@ -899,11 +903,34 @@ class Repository:
         else:
             pool = by_recency
             project_is_new = False
+        # Status board (type 'tr') — live entity state, one tracker per entity,
+        # updated by re-saving the same slug. Scoped like the recent pool
+        # (project tree + unscoped): a global tracker is global state. Computed
+        # BEFORE the recent list so the two surfaces don't show the same slug
+        # twice — the board already carries that entity's current state.
+        if project:
+            tracker_pool = [m for m in mnemonics
+                            if not m.project
+                            or project_affinity(m.project, project) >= 1]
+        else:
+            tracker_pool = [m for m in mnemonics if not m.project]
+        trackers = [
+            {'slug': m.slug, 'rule': m.rule, 'timestamp': m.timestamp,
+             'tags': m.tags}
+            for m in sorted((m for m in tracker_pool
+                             if m.type_code == 'tr' and not m.unverified),
+                            key=lambda m: m.timestamp, reverse=True)
+        ][:8]
+        tracker_slugs = {t['slug'] for t in trackers}
+
+        # Recent list keeps unverified memories (so the agent SEES a candidate
+        # to confirm) but tags them, so they're never mistaken for trusted state.
         recent_mems = [
             {'slug': m.slug, 'type': m.type_code, 'priority': m.priority,
-             'timestamp': m.timestamp, 'rule': m.rule, 'project': m.project}
-            for m in pool[:recent]
-        ]
+             'timestamp': m.timestamp, 'rule': m.rule, 'project': m.project,
+             'unverified': m.unverified}
+            for m in pool if m.slug not in tracker_slugs
+        ][:recent]
         critical_pool = mnemonics
         if project:
             # Critical rules follow the same scoping: this project's tree
@@ -915,7 +942,7 @@ class Repository:
         critical = [
             {'slug': m.slug, 'rule': m.rule}
             for m in sorted(critical_pool, key=lambda m: m.slug)
-            if m.priority == 3
+            if m.priority == 3 and not m.unverified   # candidates never "always apply"
         ]
 
         # Core operating guide (type 'co') — a per-project navigation aid that
@@ -933,25 +960,10 @@ class Repository:
         core = [
             {'slug': m.slug, 'rule': m.rule, 'body': m.body}
             for m in sorted(core_pool, key=lambda m: m.slug)
-            if m.type_code == 'co'
+            if m.type_code == 'co' and not m.unverified   # never inject unverified guidance
         ]
 
-        # Status board (type 'tr') — live entity state, one tracker per
-        # entity, updated by re-saving the same slug. memgit is the authority
-        # for these; files are downstream and may lag. Scoped like the recent
-        # pool (project tree + unscoped): a global tracker is global state.
-        if project:
-            tracker_pool = [m for m in mnemonics
-                            if not m.project
-                            or project_affinity(m.project, project) >= 1]
-        else:
-            tracker_pool = [m for m in mnemonics if not m.project]
-        trackers = [
-            {'slug': m.slug, 'rule': m.rule, 'timestamp': m.timestamp,
-             'tags': m.tags}
-            for m in sorted((m for m in tracker_pool if m.type_code == 'tr'),
-                            key=lambda m: m.timestamp, reverse=True)
-        ][:8]
+        # (Status board `trackers` computed above, before the recent list.)
 
         # Entity index — tag→count depth advertisement. Counts are what turn
         # a passive reader of this digest into an active search_memories
@@ -1488,8 +1500,12 @@ class Repository:
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
-    def stats(self) -> dict:
+    def stats(self, project=_UNSET) -> dict:
         """Store health + measured context-cost figures.
+
+        `project` scopes the digest/floor render to a workspace; the default
+        auto-detects it from the environment (what a real session pays here).
+        Pass an explicit label (or None for global) to override.
 
         Honest by construction: every number is either MEASURED (a real
         render, a real count) or labeled an estimate. No simulated query
@@ -1511,12 +1527,41 @@ class Repository:
 
         # Measured: the resume digest is what a session actually pays at
         # start — render it for real and count it.
+        rc = None
         try:
             from .cli import _format_resume_plain
-            resume_digest_tokens = count_tokens(
-                _format_resume_plain(self.resume_context()))
+            from .project import detect_project
+            # Project-aware, like a real session: a project-scoped core guide
+            # (and its always-on rules-file cost) only shows under its project.
+            proj = detect_project() if project is _UNSET else project
+            rc = self.resume_context(project=proj)
+            resume_digest_tokens = count_tokens(_format_resume_plain(rc))
         except Exception:
             resume_digest_tokens = 0
+
+        # The core operating guide is ALSO delivered as an always-on host rules
+        # file (.claude/rules/memgit.md, .cursor/rules/memgit.mdc, …) that the
+        # host loads EVERY session — a real per-session cost the digest alone
+        # doesn't capture. Count it (rendered as delivered) so the session floor
+        # isn't understated. On delivered hosts the digest now collapses its
+        # own copy (see delivered_core_files), so this is charged once, here.
+        core_guide_rulefile_tokens = 0
+        if rc:
+            from .delivery import _body_block
+            for m in (rc.get('core_memories') or []):
+                core_guide_rulefile_tokens += count_tokens(
+                    _body_block(m.get('body') or m.get('rule') or ''))
+        # Digest cost with the core body collapsed — the true injected size on a
+        # host that loads the guide from its rules file (avoids double counting).
+        resume_digest_deduped_tokens = resume_digest_tokens
+        if rc and rc.get('core_memories'):
+            try:
+                deduped = dict(rc)
+                deduped['core_delivered'] = '(host rules file)'
+                resume_digest_deduped_tokens = count_tokens(
+                    _format_resume_plain(deduped))
+            except Exception:
+                pass
 
         # Estimate: a prompt-recall block is the top-3 rules (chars/4).
         avg_rule_chars = (sum(len(m.rule or '') for m in mnemonics)
@@ -1550,9 +1595,17 @@ class Repository:
             'avg_mem_tokens': round(avg_mem_tokens),
             'critical_tokens': critical_tokens,
             'resume_digest_tokens': resume_digest_tokens,
+            'resume_digest_deduped_tokens': resume_digest_deduped_tokens,
+            'core_guide_rulefile_tokens': core_guide_rulefile_tokens,
             'recall_block_tokens_est': recall_block_tokens_est,
             'injected_per_session_tokens_est': (
                 resume_digest_tokens + recall_block_tokens_est),
+            # Honest per-session floor: the deduped digest + the always-on core
+            # rules file (counted once) + a recall block. This is what a
+            # configured host actually pays before the user types anything.
+            'injected_per_session_tokens_floor': (
+                resume_digest_deduped_tokens + core_guide_rulefile_tokens
+                + recall_block_tokens_est),
             'checkpoint_count': ck_count,
             'first_checkpoint_ts': first_ts,
             'last_checkpoint_ts': last[0].timestamp if last else None,
@@ -1563,11 +1616,19 @@ class Repository:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _author(self) -> str:
-        # MEMGIT_AUTHOR lets each agent in a multi-agent job sign its own
-        # checkpoints (e.g. MEMGIT_AUTHOR=researcher-1).
-        env_override = os.environ.get('MEMGIT_AUTHOR')
-        if env_override:
-            return env_override
+        # Attribution precedence:
+        #   MEMGIT_AUTHOR  — explicit per-agent name in a multi-agent job
+        #                    (e.g. MEMGIT_AUTHOR=researcher-1); always wins.
+        #   MEMGIT_CLIENT  — the host that launched this process, stamped into
+        #                    each host's MCP config by `memgit setup`. This is
+        #                    what makes a multi-writer store legible: a
+        #                    checkpoint shows whether Claude, Cursor, or Codex
+        #                    wrote it — without any manual config.
+        #   config author  — the store owner, the single-writer default.
+        for var in ('MEMGIT_AUTHOR', 'MEMGIT_CLIENT'):
+            val = os.environ.get(var)
+            if val:
+                return val
         try:
             cfg = _read_config(self.path / 'config')
             return cfg.get('core', {}).get('author', _env_author())
