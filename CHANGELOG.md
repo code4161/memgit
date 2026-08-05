@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.1] — 2026-08-05
+
+### Fixed
+- **The core guide's skill list was unbounded.** Skill `description` frontmatter is written to persuade a model to invoke the skill and routinely runs 600+ characters; the guide copied it verbatim. Caught immediately after 0.8.0 by running `core heal` on a real store: 18 skills produced **6,968 of the guide's 9,425 characters**, pushing the measured per-session floor from 2,765 to 3,710 tokens — on the surface that is injected every session on every host, and that the 2026-08-05 audit measured as the lowest-yield memory type in the store (2.10 recalls/memory against 17.5 for feedback). Descriptions are now trimmed to a routing summary at a sentence or word boundary; the full text is in the skill itself, one Read away.
+
 ## [0.8.0] — 2026-08-05
 
 Retrieval you can prove, and adoption that starts itself.

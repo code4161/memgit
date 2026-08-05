@@ -368,6 +368,32 @@ class TestSeedEvidence:
         assert "**9 saved memories**" in body
         assert "crypto" in body
 
+    def test_long_skill_descriptions_are_trimmed(self, tmp_path):
+        """The guide is injected every session on every host; skill frontmatter
+        is written to persuade and runs long. Routing needs a sentence."""
+        from memgit.delivery import build_seed, _SKILL_DESC_MAX
+        skills = tmp_path / ".claude" / "skills" / "verbose"
+        skills.mkdir(parents=True)
+        long_desc = ("Mandatory entry point: read this first for any request. "
+                     + "Additional qualifying detail. " * 30)
+        (skills / "SKILL.md").write_text(
+            f"---\nname: verbose\ndescription: {long_desc}\n---\nbody\n")
+        body = build_seed(tmp_path, home=tmp_path)
+        line = next(l for l in body.splitlines() if l.startswith("- **verbose**"))
+        assert len(line) < _SKILL_DESC_MAX + 40
+        assert "Mandatory entry point" in line, "the routing signal must survive"
+
+    def test_short_descriptions_untouched(self, tmp_path):
+        from memgit.delivery import _routing_summary
+        d = "Deploy the portfolio to Vercel."
+        assert _routing_summary(d) == d
+
+    def test_trim_never_cuts_mid_word(self, tmp_path):
+        from memgit.delivery import _routing_summary
+        out = _routing_summary("alpha " * 100)
+        assert not out.rstrip("…").endswith("alph")
+        assert out.endswith(("…", ".")) and len(out.strip("…. ")) > 20
+
     def test_seed_stays_quiet_below_the_bar(self, tmp_path):
         from memgit.delivery import build_seed
 

@@ -229,6 +229,37 @@ def collect_skills(root: Path, home: Optional[Path] = None) -> list[tuple[str, s
     return sorted(found.items())
 
 
+#: Per-skill budget in the guide's routing list. The guide is injected every
+#: session on every host, so it is the single most expensive surface memgit
+#: owns — and a 2026-08-05 audit measured it as the LOWEST-yield memory type
+#: (2.10 recalls/memory vs 17.5 for feedback). Skill `description` frontmatter
+#: is written to persuade a model to invoke the skill and routinely runs 600+
+#: chars; on a store with 18 skills that was 6,968 of the guide's 9,425 chars.
+#: The guide only needs to answer "which skill covers this?" — the full text
+#: is in the skill itself, one Read away.
+_SKILL_DESC_MAX = 150
+
+
+def _routing_summary(desc: str) -> str:
+    """Trim a skill description to the part that answers 'is this the one?'.
+
+    Prefers a clean sentence break inside the budget; falls back to a word
+    boundary. Never mid-word, and never a bare ellipsis with no content.
+    """
+    desc = ' '.join((desc or '').split())
+    if len(desc) <= _SKILL_DESC_MAX:
+        return desc
+    window = desc[:_SKILL_DESC_MAX + 1]
+    for stop in ('. ', '; ', ' — ', ' - '):
+        cut = window.rfind(stop)
+        if cut >= _SKILL_DESC_MAX // 2:
+            return desc[:cut].rstrip(' .;—-') + '.'
+    cut = window.rfind(' ')
+    if cut < _SKILL_DESC_MAX // 2:
+        cut = _SKILL_DESC_MAX
+    return desc[:cut].rstrip(' .;,—-') + '…'
+
+
 def _store_scale(repo, project: Optional[str]) -> Optional[tuple[int, list[str]]]:
     """(memory count, top topic tags) for this project — the concrete evidence
     the guide leads with. Returns None when there is nothing worth stating."""
@@ -298,6 +329,7 @@ def build_seed(root: Path, home: Optional[Path] = None,
     if skills:
         lines += ["", "## Available skills (invoke by name when the task matches)"]
         for name, desc in skills:
+            desc = _routing_summary(desc)
             lines.append(f"- **{name}** — {desc}" if desc else f"- **{name}**")
 
     rule_files = []
