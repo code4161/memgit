@@ -95,7 +95,13 @@ TARGETS: list[Target] = [
     # file — created if the project shows Gemini usage, user content intact.
     Target("Gemini CLI", "GEMINI.md", _render_plain, [".gemini", "GEMINI.md"],
            dedicated=False, cap=32000),
-    Target("Codex", "AGENTS.md", _render_plain, [".codex", "AGENTS.md"],
+    # Codex and Antigravity BOTH read AGENTS.md. They share one Target rather
+    # than getting one each: two targets writing the same path would have the
+    # second overwrite the first's marker block on every sync. Detection is the
+    # union of their signatures, so the file is created when either is in use.
+    Target("Codex / Antigravity", "AGENTS.md", _render_plain,
+           [".codex", "AGENTS.md", ".antigravity", ".antigravity-ide",
+            ".gemini/config"],
            dedicated=False, cap=32000),
 ]
 
@@ -128,13 +134,22 @@ def delivered_core_files(root: Path, home: Optional[Path] = None) -> list[Path]:
     return out
 
 
-def is_present(target: Target, root: Path, home: Optional[Path] = None) -> bool:
+def is_present(target: Target, root: Path, home: Optional[Path] = None,
+               project_only: bool = False) -> bool:
     """A host counts as 'in use' if any detect signature exists in the project
     root or the user's home — so a Cursor user gets a project-local rule file
-    even before they've created a project-local `.cursor/`."""
+    even before they've created a project-local `.cursor/`.
+
+    project_only=True restricts the check to the project root. The automatic
+    bootstrap path uses this: creating files in a repo the user never asked
+    about is only defensible when that repo itself shows the host in use.
+    An explicit `memgit core sync` keeps the broader home-dir behaviour.
+    """
     home = home or Path.home()
     for sig in target.detect:
-        if (root / sig).exists() or (home / sig).exists():
+        if (root / sig).exists():
+            return True
+        if not project_only and (home / sig).exists():
             return True
     return False
 
@@ -214,9 +229,38 @@ def collect_skills(root: Path, home: Optional[Path] = None) -> list[tuple[str, s
     return sorted(found.items())
 
 
-def build_seed(root: Path, home: Optional[Path] = None) -> str:
+def _store_scale(repo, project: Optional[str]) -> Optional[tuple[int, list[str]]]:
+    """(memory count, top topic tags) for this project — the concrete evidence
+    the guide leads with. Returns None when there is nothing worth stating."""
+    try:
+        from .links import filter_active, entity_index
+        from .project import project_affinity
+        mems = [m for m in filter_active(repo.list()) if m.type_code != "co"]
+        if project:
+            mems = [m for m in mems
+                    if m.project and project_affinity(m.project, project) >= 1]
+        else:
+            mems = [m for m in mems if not m.project]
+        if len(mems) < 5:
+            return None
+        topics = [t for t, _n in entity_index(mems, project, min_count=2, cap=5)]
+        return len(mems), topics
+    except Exception:
+        return None
+
+
+def build_seed(root: Path, home: Optional[Path] = None,
+               repo=None, project: Optional[str] = None) -> str:
     """Assemble a compact routing guide from existing host skills + rules files.
-    Deterministic — the intelligent refinement comes from the usage loop (3c)."""
+    Deterministic — the intelligent refinement comes from the usage loop (3c).
+
+    When `repo` is supplied the memgit section is made CONCRETE: how many
+    memories this project actually holds, and the topics they cover. The
+    abstract form ("call recall before answering") is an instruction the model
+    can weigh against its own confidence and skip. A stated count of real prior
+    work is evidence it cannot — the same effect measured on depth hints, where
+    naming a specific memory beat advertising a count of them.
+    """
     home = home or Path.home()
     lines: list[str] = [
         "# Core operating guide",
@@ -225,6 +269,20 @@ def build_seed(root: Path, home: Optional[Path] = None) -> str:
         "repo's own rules where they differ.",
         "",
         "## memgit",
+    ]
+
+    scale = _store_scale(repo, project) if repo is not None else None
+    if scale:
+        n, topics = scale
+        topic_str = f" covering {', '.join(topics)}" if topics else ""
+        lines.append(
+            f"- This project has **{n} saved memories**{topic_str} — decisions, "
+            "gotchas and corrections from prior sessions that are NOT in the "
+            "code or the README. Answering from the files alone re-derives what "
+            "is already known and repeats mistakes already paid for."
+        )
+
+    lines += [
         "- Before answering anything that depends on past work, call resume/search "
         "(memgit) — the record of prior sessions lives there, not in this file.",
         "- memgit is the authority for entity STATUS ('tr' tracker memories: "
@@ -369,13 +427,16 @@ class DeliveryResult:
 def deliver(root: Path, body: str, hosts: Optional[list[str]] = None,
             all_hosts: bool = False, dry_run: bool = False,
             home: Optional[Path] = None,
-            only_existing: bool = False) -> list[DeliveryResult]:
+            only_existing: bool = False,
+            project_only: bool = False) -> list[DeliveryResult]:
     """Write the core guide into each selected host's memgit-owned surface.
 
     hosts=None + all_hosts=False → auto-detect hosts in use (default).
     hosts=[...] → exactly those labels. all_hosts=True → every target.
     only_existing=True → update just the host files that already exist (used by
     the auto-refresh path, so a background sync never creates new host files).
+    project_only=True → detect hosts from the project root alone, ignoring the
+    user's home dir (used by the automatic bootstrap).
     """
     # Clean up inert artifacts from older releases (e.g. `.gemini/memgit.md`,
     # which Gemini CLI never loaded) — memgit owns these filenames outright,
@@ -392,7 +453,8 @@ def deliver(root: Path, body: str, hosts: Optional[list[str]] = None,
         if hosts is not None:
             if t.label not in hosts:
                 continue
-        elif not all_hosts and not is_present(t, root, home):
+        elif not all_hosts and not is_present(t, root, home,
+                                              project_only=project_only):
             continue
 
         path = root / t.rel_path

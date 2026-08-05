@@ -61,7 +61,7 @@ class TestSharedAgentsFile:
     def test_user_content_preserved_and_block_added(self, project, home):
         agents = project / "AGENTS.md"
         agents.write_text("# Mine\nUser instructions.\n")
-        deliver(project, BODY, hosts=["Codex"], home=home)
+        deliver(project, BODY, hosts=["Codex / Antigravity"], home=home)
         text = agents.read_text()
         assert "User instructions." in text          # preserved
         assert MARKER_START in text and MARKER_END in text

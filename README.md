@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-294%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-404%20passing-brightgreen)](tests/)
 
 ---
 
@@ -258,6 +258,21 @@ A project's hardest onboarding problem isn't *what* it does — it's *how to wor
 
 And it **learns**: a sidecar usage ledger tracks which memories actually get recalled, and the most-used ones are auto-promoted as pointers into the guide over time (budget-capped, decaying, and always subordinate to the repo's own rules — it never restates or overrides them). Drifted? `memgit core heal` rebuilds it.
 
+Since 0.8.0 it also **starts itself**: a project's first guide is created automatically once it holds a handful of memories, so the loop no longer waits on someone remembering to run `core seed`. The guide leads with what the project actually holds — "this project has N saved memories covering *topics*" — because a stated count of real prior work is evidence a model can act on, where an abstract instruction to check memory is something it can weigh against its own confidence and skip.
+
+---
+
+## Ranking you can prove
+
+Retrieval quality used to be adjusted on intuition. `memgit eval` replaces that with a measurement, using two frozen sets mined from the store itself:
+
+- **recall** — real prompts and the memories memgit actually surfaced for them. Measures *stability*: did a change break what used to work?
+- **synthetic** — each memory queried by its own `why`, expecting itself back, with the slug's own words stripped out of the query. Measures *correctness*, independently of any past ranking. (The recall set alone is circular — its answers came from the ranking under test.)
+
+Both report hit@1, recall@3/5/10 and MRR against a pinned baseline. There is deliberately no single blended score, and no fabricated "tokens saved" number.
+
+It earns its keep immediately. Two changes built for 0.8.0 looked obviously right and were measured wrong: a recency multiplier (cut — real-prompt hit@1 −0.020, MRR −0.018) and destructive stemming, which fixed its motivating query while costing hit@1 −0.038 overall (rebuilt as an additive field, then +0.020/+0.041/+0.019). A BM25 normalisation bug introduced in the same release was caught the same way.
+
 ---
 
 ## Depth advertisement, trackers & supersession (v0.6.0)
@@ -296,6 +311,15 @@ memgit core seed                  # draft a guide from this project's skills + r
 memgit core sync                  # deliver it into each AI host's own rules file (additive)
 memgit core show / edit           # view / curate the guide
 memgit core heal                  # self-repair a guide that has drifted
+                                  # (a project's FIRST guide is created automatically
+                                  #  once it holds 5+ memories — no command needed)
+
+# Retrieval evaluation — prove a ranking change helped
+memgit eval mine                  # freeze a regression set from real recall events
+memgit eval mine --synthetic      # non-circular set: query each memory by its own `why`
+memgit eval run --set recall      # hit@1 / recall@3,5,10 / MRR vs the pinned baseline
+memgit eval run --baseline        # pin the current result as the comparison point
+memgit eval run --misses 10       # inspect the cases where nothing relevant surfaced
 
 # Scale & proof
 memgit squash                     # compress old history (archives what it collapses)
@@ -352,6 +376,9 @@ memgit thread list / switch / create
 | **Windsurf** | MCP stdio | `memgit setup windsurf` |
 | **Cline / Roo-Code** | MCP stdio | `memgit setup cline` |
 | **Continue.dev** | MCP stdio | `memgit setup continue` |
+| **Codex** | MCP stdio (TOML) | `memgit setup codex` |
+| **Antigravity** | MCP stdio | `memgit setup antigravity` |
+| **Gemini CLI** | MCP stdio | `memgit setup gemini-cli` |
 | **ChatGPT (Custom Actions)** | HTTP + OpenAPI | `memgit serve --http` → import `http://localhost:7474/openapi.json` |
 | **Gemini API** | HTTP function calling | `memgit serve --http` + `llm-tool-definitions.json` |
 | **Any MCP tool** | MCP stdio | Add `{"command": "memgit", "args": ["serve"]}` to config |
@@ -412,7 +439,7 @@ git clone https://github.com/code4161/memgit.git
 cd memgit
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest    # 245 tests, all passing, < 5 seconds
+pytest    # 404 tests, all passing, < 5 seconds
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -443,8 +470,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Lossless memories — full `body` alongside the compact rule (v0.3.0)
 - [x] Project-scoped memories + `memgit onboard` mid-project bootstrap (v0.3.0)
 - [x] VS Code extension (v0.1.5, Marketplace: code416-memgit.memgit)
+- [x] Codex + Antigravity support — MCP registration + `AGENTS.md` core guide (v0.8.0)
+- [x] `memgit eval` — measured retrieval quality, real + non-circular sets (v0.8.0)
+- [x] Usage-aware ranking — the recall ledger feeds relevance, not just the guide (v0.8.0)
+- [x] Automatic core-guide bootstrap — the self-improving loop starts itself (v0.8.0)
 - [ ] JetBrains plugin (Phase 3)
-- [ ] Semantic search via embeddings (Phase 4)
+- [ ] Semantic search via embeddings — gated on `memgit eval` showing a real gain (Phase 4)
+- [ ] Public benchmark numbers (LongMemEval, LoCoMo) (Phase 4)
 - [x] memgit.dev website (live)
 - [ ] Memory compression / auto-summarization (Phase 5)
 - [ ] Team access control + audit trail (Phase 5)

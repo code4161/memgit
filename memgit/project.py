@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 # Claude Code keeps [A-Za-z0-9_-] and turns everything else into '-',
 # one dash per character (runs are NOT collapsed: '/.x' → '--x').
@@ -142,6 +142,62 @@ def detect_project(cwd: Optional[Path] = None) -> Optional[str]:
         return project_label_from_path(Path.cwd())
     except OSError:
         return None
+
+
+def canonical_project(label: Optional[str], known) -> Optional[str]:
+    """Fold a free-text project label onto an existing one when it clearly means it.
+
+    The MCP/HTTP save tools take `project` as a free string, and agents supply
+    the short name they have in their head ('log-report') rather than the
+    munged workspace label ('Downloads-log-report'). Filter-by-default scoping
+    then treats the two as unrelated stores, and memories written under the
+    short name become invisible from the real workspace. Measured on a live
+    store: six projects had split into two labels each, hiding 68 memories.
+
+    `known` is either a mapping {label: memory_count} or a plain iterable of
+    labels (treated as count 1 each). Counts matter: a label that ALREADY has
+    memories is an established project and is never folded away, whichever
+    direction the containment runs. That is what makes this safe in both real
+    cases seen on the live store —
+
+        'log-report'(0 memories) + {'Downloads-log-report': 850}
+            -> 'Downloads-log-report'          (the split is healed)
+        'FittyMe'(90 memories)   + {'Freelance-FittyMe': 1, 'FittyMe': 90}
+            -> 'FittyMe'                       (established; left alone)
+
+    — where a rule that always folded onto the longer label would have moved
+    90 memories onto the label holding 1.
+
+    Folding is otherwise conservative: the input must be a trailing '-'-segment
+    of EXACTLY ONE known label. Ambiguity leaves it untouched, because guessing
+    wrong files a memory under the wrong project, which is worse than a new
+    label. An exact match, a fully unknown label, and `_unknown` pass through.
+    Every fold is reported to the caller as a warning — it is never silent.
+    """
+    if not label or label == UNKNOWN_PROJECT:
+        return label
+    if isinstance(known, dict):
+        counts = {k: v for k, v in known.items()
+                  if k and k != UNKNOWN_PROJECT}
+    else:
+        counts = {k: 1 for k in known if k and k != UNKNOWN_PROJECT}
+    # An established label is authoritative — never fold it onto a sibling.
+    if counts.get(label):
+        return label
+    matches = [k for k in counts if k.endswith('-' + label) and counts[k]]
+    if len(matches) == 1:
+        return matches[0]
+    return label
+
+
+def known_projects(mnemonics) -> dict:
+    """{project label: memory count} for the store (quarantine excluded)."""
+    counts: dict = {}
+    for m in mnemonics:
+        p = m.project
+        if p and p != UNKNOWN_PROJECT:
+            counts[p] = counts.get(p, 0) + 1
+    return counts
 
 
 def scope_filter(mnemonics, project: Optional[str]) -> list:

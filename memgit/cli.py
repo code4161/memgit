@@ -323,7 +323,7 @@ def core_seed(force):
                       'edit it (`memgit core edit`) or pass --force to redraft')
         return
     from .delivery import build_seed
-    body = build_seed(Path.cwd())
+    body = build_seed(Path.cwd(), repo=repo, project=project)
     m = Mnemonic(
         type_code='co', slug=_core_slug(project),
         timestamp=datetime.now(timezone.utc),
@@ -408,13 +408,77 @@ def _refresh_core(repo, project, redeliver=True) -> bool:
     return True
 
 
+#: A project must hold at least this many memories before it is bootstrapped
+#: automatically. Below it there is nothing worth navigating, and writing
+#: files into a directory someone opened once would be presumptuous.
+AUTO_SEED_MIN_MEMORIES = 5
+
+
+def _auto_seed_core(repo, project) -> bool:
+    """Create a project's first core guide, unprompted, once it has earned one.
+
+    THE ADOPTION BUG THIS FIXES. `core seed` and `core sync` were manual, and
+    nothing ever called them. So a project that never had a human run them had
+    no core guide; `_refresh_core` returns early with no guide to refresh; and
+    no rules file was ever delivered to any host. Measured on a live install:
+    30 projects had memories, 6 had a core guide. In the other 24, memgit's
+    entire presence in Cursor/Codex/Antigravity was an MCP tool description —
+    which is exactly the surface the hook design already measured as too weak
+    to rely on (6% voluntary engagement vs 100% for injected context).
+
+    The self-improving loop could never start on its own. Now it starts here.
+
+    Conservative by construction:
+      * only for a real, detected project (never the store, never `_unknown`)
+      * only past AUTO_SEED_MIN_MEMORIES, so scratch directories are skipped
+      * host files are delivered project_only, so no `.cursor/` is conjured in
+        a repo that has never seen Cursor — the guide still exists as a memory
+        and still rides the resume digest regardless
+    Returns True when a guide was created.
+    """
+    from .project import UNKNOWN_PROJECT, project_affinity
+    if not project or project == UNKNOWN_PROJECT:
+        return False
+    if _project_is_store(repo, project):
+        return False
+    if _get_core(repo, project) is not None:
+        return False
+
+    mems = repo.list()
+    owned = sum(1 for m in mems
+                if m.project and project_affinity(m.project, project) >= 1)
+    if owned < AUTO_SEED_MIN_MEMORIES:
+        return False
+
+    from .delivery import build_seed, refresh_core_body, deliver
+    now = datetime.now(timezone.utc)
+    curated = build_seed(Path.cwd(), repo=repo, project=project)
+    body = refresh_core_body(curated, repo, project, now) or (curated.rstrip() + '\n')
+    repo.add(Mnemonic(type_code='co', slug=_core_slug(project), timestamp=now,
+                      rule='core operating guide', body=body,
+                      project=project, priority=2))
+    repo.commit(message=f'core: auto-seed {_core_slug(project)}', trigger='auto')
+    try:
+        deliver(Path.cwd(), body, project_only=True)
+    except OSError:
+        pass
+    return True
+
+
 def _maybe_auto_core(repo) -> None:
     """Best-effort end-of-sync housekeeping, called from `sync` (the Stop
-    hook): auto-grow the core guide and sweep month-old session-cache files.
+    hook): bootstrap a first core guide if this project has earned one,
+    auto-grow an existing one, and sweep month-old session-cache files.
     Silent and never raises — the AI is the operator, so this must just work
     in the background without a human running anything."""
+    project = None
     try:
-        _refresh_core(repo, _current_project())
+        project = _current_project()
+    except Exception:
+        pass
+    try:
+        if not _auto_seed_core(repo, project):
+            _refresh_core(repo, project)
     except Exception:
         pass
     try:
@@ -446,7 +510,7 @@ def core_heal(reset_usage):
     if reset_usage:
         _reset(repo)
     now = datetime.now(timezone.utc)
-    curated = build_seed(Path.cwd())
+    curated = build_seed(Path.cwd(), repo=repo, project=project)
     body = refresh_core_body(curated, repo, project, now) or (curated.rstrip() + '\n')
     repo.add(Mnemonic(type_code='co', slug=_core_slug(project), timestamp=now,
                       rule='core operating guide', body=body,
@@ -1448,8 +1512,10 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
     scope = None
     if not project_filter and not all_projects:
         scope = current_project
+    from .usage import read_usage
     results = bm25_score(query, mnemonics, top_k=top,
-                         boost_project=current_project, scope_project=scope)
+                         boost_project=current_project, scope_project=scope,
+                         usage=read_usage(repo))
 
     # Metrics: credit a depth hint if this search followed one (conversion).
     try:
@@ -1895,6 +1961,147 @@ def metrics(fmt_json, reset):
         console.print(f'  {acted:,} of {adv:,} advertised hints were acted on '
                       f'(searched within {30} min) — [bold]{pct}%[/bold]')
     console.print()
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def eval(ctx):
+    """Retrieval evaluation — prove a ranking change helped, don't assume it.
+
+    The regression set is mined from the store's own recall history (real
+    prompts, and the memories memgit actually surfaced for them), then frozen.
+    Run `eval mine` once, then `eval run` before and after any ranking change.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(eval_run)
+
+
+@eval.command('mine')
+@click.option('--limit', default=300, show_default=True,
+              help='Maximum cases to mine')
+@click.option('--from', 'source_dir', default=None,
+              help='Transcript root (default: ~/.claude/projects)')
+@click.option('--append', is_flag=True,
+              help='Add to the existing set instead of replacing it')
+@click.option('--synthetic', is_flag=True,
+              help='Non-circular set: query a memory by its own `why`, expect '
+                   'itself back (measures correctness, not agreement with the '
+                   'ranking that produced the transcripts)')
+def eval_mine(limit, source_dir, append, synthetic):
+    """Build the regression set from real recall events in host transcripts."""
+    repo = _require_repo()
+    from .evaluate import (mine_from_transcripts, mine_synthetic,
+                           load_evalset, save_evalset)
+    if synthetic:
+        mined = mine_synthetic(repo, limit=limit)
+        if not mined:
+            console.print('[yellow]no memories with a substantial `why`[/yellow] — '
+                          'nothing to build a synthetic set from')
+            return
+    else:
+        root = Path(source_dir) if source_dir else Path.home() / '.claude' / 'projects'
+        if not root.is_dir():
+            err.print(f'[red]no transcripts at[/red] {root}')
+            sys.exit(1)
+        mined = mine_from_transcripts(root, limit=limit)
+        if not mined:
+            console.print('[yellow]no recall events found[/yellow] — '
+                          'the set builds up as prompt-recall fires in real sessions')
+            return
+    name = 'synthetic' if synthetic else 'recall'
+    cases = mined
+    if append:
+        existing = load_evalset(repo, name)
+        seen = {c.query for c in existing}
+        cases = existing + [c for c in mined if c.query not in seen]
+    n = save_evalset(repo, cases, name)
+    from .evaluate import evalset_path
+    console.print(f'[green]froze[/green] {n} {name} eval case(s) → '
+                  f'{evalset_path(repo, name)}')
+
+
+@eval.command('run')
+@click.option('--set', 'set_name', default='recall', show_default=True,
+              type=click.Choice(['recall', 'synthetic']),
+              help='recall = stability vs the ranking that produced the '
+                   'transcripts; synthetic = correctness, independent of it')
+@click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output')
+@click.option('--no-usage', is_flag=True,
+              help='Score without the usage-ledger term (isolate its effect)')
+@click.option('--baseline', is_flag=True,
+              help='Also write this result as the baseline to compare against')
+@click.option('--misses', default=0, show_default=True,
+              help='Print N cases where no expected memory made the top 10')
+def eval_run(set_name, fmt_json, no_usage, baseline, misses):
+    """Score a frozen regression set against the current ranking."""
+    import json
+    repo = _require_repo()
+    from .evaluate import load_evalset, run_eval, compare, EvalResult, baseline_path
+    cases = load_evalset(repo, set_name)
+    if not cases:
+        err.print(f'[red]no {set_name} eval set[/red] — run '
+                  f'`memgit eval mine{" --synthetic" if set_name == "synthetic" else ""}` first')
+        sys.exit(1)
+    res = run_eval(repo, cases, use_usage=not no_usage)
+
+    base_path = baseline_path(repo, set_name)
+    prev = None
+    if base_path.exists():
+        try:
+            prev_d = json.loads(base_path.read_text(encoding='utf-8'))
+            prev = EvalResult(**{k: v for k, v in prev_d.items()
+                                 if k in EvalResult.__dataclass_fields__})
+        except (OSError, json.JSONDecodeError, TypeError):
+            prev = None
+
+    if fmt_json:
+        out = res.as_dict()
+        if prev:
+            out['delta_vs_baseline'] = compare(prev, res)
+        print(json.dumps(out, indent=2))
+    else:
+        from rich.rule import Rule
+        from rich import box
+        console.print()
+        stale_note = f' · {res.stale} stale (relabelled)' if res.stale else ''
+        console.print(Rule(f'[bold cyan]memgit eval · {set_name}[/bold cyan]  '
+                           f'[dim]{res.n} cases · {res.skipped} skipped'
+                           f'{stale_note}[/dim]'))
+        console.print()
+        t = Table(box=box.SIMPLE, header_style='bold')
+        t.add_column('Metric'); t.add_column('Value', justify='right')
+        if prev:
+            t.add_column('vs baseline', justify='right')
+        deltas = compare(prev, res) if prev else {}
+        labels = [('hit_at_1', 'hit@1'), ('recall_at_3', 'recall@3'),
+                  ('recall_at_5', 'recall@5'), ('recall_at_10', 'recall@10'),
+                  ('mrr', 'MRR')]
+        for key, label in labels:
+            row = [label, f'{getattr(res, key):.4f}']
+            if prev:
+                d = deltas[key]
+                colour = 'green' if d > 0 else ('red' if d < 0 else 'dim')
+                row.append(f'[{colour}]{d:+.4f}[/{colour}]')
+            t.add_row(*row)
+        console.print(t)
+        if res.stale:
+            console.print(f'\n[yellow]{res.stale} case(s) stale[/yellow] '
+                          '[dim]— their expected memory was relabelled out of '
+                          'the case\'s project scope. Not a ranking regression; '
+                          're-run `memgit eval mine` to refresh.[/dim]')
+        if misses:
+            shown = [r for r in res.ranks if r['rank'] is None][:misses]
+            if shown:
+                console.print(f'\n[bold]Misses[/bold] [dim](no expected memory in '
+                              'top 10)[/dim]')
+                for r in shown:
+                    console.print(f'  [dim]q:[/dim] {r["query"]}')
+                    console.print(f'     [dim]expected:[/dim] {", ".join(r["expected"])}')
+        console.print()
+
+    if baseline:
+        base_path.write_text(json.dumps(res.as_dict(), indent=1), encoding='utf-8')
+        console.print(f'[green]baseline written[/green] → {base_path}')
 
 
 @cli.command()
@@ -2593,17 +2800,28 @@ def _all_targets():
             home / '.codex',
         ),
         (
-            # Antigravity (Google) — standard JSON mcpServers schema. The
-            # `antigravity/` config dir is a symlink to `.gemini/config/`;
-            # writing through it is fine. Distinct from Gemini CLI's own
-            # settings.json (that entry above is NOT Antigravity's).
+            # Antigravity (Google) — standard JSON mcpServers schema, but the
+            # path moved. Antigravity 2.x shares ONE config across the IDE, the
+            # `agy` CLI and the SDK: ~/.gemini/config/mcp_config.json. The
+            # per-app `antigravity/` and `antigravity-ide/` dirs are NOT that
+            # file (verified on a live install: the shared config was read and
+            # the per-app ones ignored), so registering only there left
+            # Antigravity with no memgit tools at all. Shared config first;
+            # the 1.x per-app paths follow as fallbacks for older installs.
+            # Distinct from Gemini CLI's own settings.json above.
             'Antigravity',
+            home / '.gemini' / 'config' / 'mcp_config.json',
+            _patch_mcp_servers,
+            home / '.gemini' / 'config',
+        ),
+        (
+            'Antigravity (legacy 1.x)',
             home / '.gemini' / 'antigravity' / 'mcp_config.json',
             _patch_mcp_servers,
             home / '.gemini' / 'antigravity',
         ),
         (
-            'Antigravity IDE',
+            'Antigravity IDE (legacy 1.x)',
             home / '.gemini' / 'antigravity-ide' / 'mcp_config.json',
             _patch_mcp_servers,
             home / '.gemini' / 'antigravity-ide',
@@ -2841,18 +3059,30 @@ def setup_codex(dry_run):
 @setup.command('antigravity')
 @click.option('--dry-run', is_flag=True)
 def setup_antigravity(dry_run):
-    """Register with Antigravity (~/.gemini/antigravity[-ide]/mcp_config.json).
+    """Register with Antigravity (~/.gemini/config/mcp_config.json).
 
-    Antigravity uses the standard JSON mcpServers schema (distinct from Gemini
-    CLI's settings.json). Both the IDE and CLI config paths are wired if present.
+    Antigravity 2.x shares one MCP config across the IDE, the `agy` CLI and the
+    SDK at ~/.gemini/config/mcp_config.json — that is the file it actually
+    reads. The per-app ~/.gemini/antigravity[-ide]/ paths belong to 1.x and are
+    still written when present, so an older install keeps working.
+
+    Antigravity uses the standard JSON mcpServers schema, distinct from Gemini
+    CLI's settings.json.
     """
     home = Path.home()
+    wrote = False
     for label, path in (
-        ('Antigravity', home / '.gemini' / 'antigravity' / 'mcp_config.json'),
-        ('Antigravity IDE', home / '.gemini' / 'antigravity-ide' / 'mcp_config.json'),
+        ('Antigravity', home / '.gemini' / 'config' / 'mcp_config.json'),
+        ('Antigravity (legacy 1.x)',
+         home / '.gemini' / 'antigravity' / 'mcp_config.json'),
+        ('Antigravity IDE (legacy 1.x)',
+         home / '.gemini' / 'antigravity-ide' / 'mcp_config.json'),
     ):
         if path.exists() or path.parent.exists():
             _run_target(label, path, _patch_mcp_servers, dry_run)
+            wrote = True
+    if not wrote:
+        console.print('[dim]Antigravity not detected (no ~/.gemini/config)[/dim]')
 
 
 #: substrings identifying a hook command as one of ours (any generation)

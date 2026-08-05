@@ -98,9 +98,10 @@ def prompt_recall() -> int:
         # Then scoped to this project's family + explicit-global: recall is
         # filter-by-default — another project's memories never inject, and
         # the IDF corpus (and the depth hint below) see only the scoped pool.
+        from .usage import read_usage
         mnemonics = scope_filter(filter_active(repo.list()), project)
         results = bm25_score(prompt, mnemonics, top_k=RECALL_TOP_K,
-                             boost_project=project)
+                             boost_project=project, usage=read_usage(repo))
     except Exception:
         return 0
     # BM25 IDF collapses on small corpora (a term found in most of 5 docs
@@ -187,7 +188,7 @@ def prompt_recall() -> int:
 
 def _depth_hint(results, mnemonics, seen: set[str],
                 project: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-    """One '+N more on <tag>' line advertising depth behind the injected hits.
+    """One depth line advertising what else the store holds on this topic.
 
     Picks the single best tag: among tags carried by the injected results,
     the one with the most ACTIVE memories that were neither injected nor
@@ -195,31 +196,46 @@ def _depth_hint(results, mnemonics, seen: set[str],
     explicit-global), so the advertised count is exactly what a scoped
     search will return — a count inflated by foreign projects would lead
     nowhere. Requires >= 2 (a count of 1 is not depth and teaches the model
-    to ignore counts). Project-label tags are excluded — the same noise rule
-    as the memory index and context recall. At most one line, ever.
+    to ignore counts). Noise tags — the project label's own components, and
+    SHA/date/number-shaped identifiers — are excluded: they name nothing a
+    reader can judge as worth fetching.
+
+    The line NAMES the best unshown memory rather than only counting. Measured
+    over 886 real sessions, the bare-count form ("+34 more saved on 'crypto'")
+    converted at 20.5% — four times in five the model was told depth existed
+    and moved on. A count is not evidence; a concrete rule the reader can see
+    is missing is. At most one line, ever.
+
     Returns (line, tag) — both None when nothing clears the bar.
     """
-    from .links import label_noise
+    from .links import label_noise, is_noise_tag
     noise = label_noise(project)
     injected = {r.mnemonic.slug for r in results}
     tags: set[str] = set()
     for r in results:
         tags.update(t.strip() for t in r.mnemonic.tags
-                    if t.strip() and len(t.strip()) <= 40
-                    and t.strip().lower() not in noise)
+                    if t.strip() and not is_noise_tag(t, noise))
     if not tags:
         return None, None
-    best_tag, best_n = None, 0
+    best_tag, best_n, best_pool = None, 0, []
     for tag in sorted(tags):
-        n = sum(
-            1 for m in mnemonics
-            if tag in m.tags and m.slug not in injected and m.slug not in seen
-        )
-        if n > best_n:
-            best_tag, best_n = tag, n
+        pool = [m for m in mnemonics
+                if tag in m.tags and m.slug not in injected and m.slug not in seen]
+        if len(pool) > best_n:
+            best_tag, best_n, best_pool = tag, len(pool), pool
     if best_tag is None or best_n < 2:
         return None, None
-    line = f'- +{best_n} more saved on \'{best_tag}\' — search_memories("{best_tag}")'
+
+    # Name the strongest unshown memory: highest priority, then longest rule
+    # as a cheap proxy for specificity. Deterministic (slug breaks ties) so
+    # the same state always advertises the same example.
+    example = max(best_pool,
+                  key=lambda m: (m.priority, len(m.rule or ''), m.slug))
+    teaser = (example.rule or '').strip().replace('\n', ' ')
+    if len(teaser) > 110:
+        teaser = teaser[:109] + '…'
+    line = (f'- +{best_n} more saved on \'{best_tag}\', including '
+            f'[{example.slug}] {teaser} — search_memories("{best_tag}")')
     return line, best_tag
 
 

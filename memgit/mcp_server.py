@@ -534,9 +534,11 @@ def run_server(store_path: Path | None = None) -> None:
             scope = None
             if not project_filter and not all_projects:
                 scope = current_project
+            from .usage import read_usage
             results = bm25_score(query, mnemonics, top_k=top_k,
                                  boost_project=current_project,
-                                 scope_project=scope)
+                                 scope_project=scope,
+                                 usage=read_usage(repo))
 
             if not results:
                 from .project import same_project_family
@@ -665,10 +667,21 @@ def run_server(store_path: Path | None = None) -> None:
             # running in. Detection failing must NEVER silently produce a
             # global memory — the save is quarantined under `_unknown`
             # instead, and the response says so.
-            from .project import UNKNOWN_PROJECT
+            from .project import (UNKNOWN_PROJECT, canonical_project,
+                                  known_projects)
             quarantined = False
+            folded_from = None
+            all_mems = repo.list()
             if "project" in arguments:
                 project = (arguments.get("project") or "").strip() or None
+                # An explicit label is a free string the calling agent typed.
+                # Fold an unambiguous short form onto the real workspace label
+                # so a memory saved as 'log-report' is not stranded outside
+                # 'Downloads-log-report' by filter-by-default scoping.
+                if project:
+                    canonical = canonical_project(project, known_projects(all_mems))
+                    if canonical != project:
+                        folded_from, project = project, canonical
             else:
                 project = _detect_project()
                 if project is None:
@@ -681,7 +694,11 @@ def run_server(store_path: Path | None = None) -> None:
             from .links import validate_relations
             sup_list, rel_list, warnings = validate_relations(
                 slug, arguments.get("supersedes"), arguments.get("related"),
-                repo.list())
+                all_mems)
+            if folded_from:
+                warnings.append(
+                    f"project '{folded_from}' folded to '{project}' "
+                    "(existing workspace label)")
 
             # Governance / candidate boundary: a memory is quarantined as
             # `unverified` when the caller marks it so, OR when its text looks
@@ -717,7 +734,7 @@ def run_server(store_path: Path | None = None) -> None:
             try:
                 from .links import find_conflicts
                 conflicts = find_conflicts(
-                    m, repo.list(),
+                    m, all_mems,
                     scope_project=(project if project != UNKNOWN_PROJECT else None))
             except Exception:
                 conflicts = []

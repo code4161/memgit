@@ -220,9 +220,11 @@ class MemgitHandler(BaseHTTPRequestHandler):
             scope = None
             if not project_filter and not all_projects:
                 scope = current_project
+            from .usage import read_usage
             results = bm25_score(query, mnemonics, top_k=top_k,
                                  boost_project=current_project,
-                                 scope_project=scope)
+                                 scope_project=scope,
+                                 usage=read_usage(repo))
             self._json_response([_mnem_to_dict(r.mnemonic, r.score) for r in results])
             return
 
