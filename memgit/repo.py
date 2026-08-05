@@ -996,7 +996,16 @@ class Repository:
             'entity_index': topics,
             'core_missing': core_missing,
             'maintenance': self.maintenance_hint(count),
+            'durability': self._durability_hint(),
         }
+
+    def _durability_hint(self) -> Optional[str]:
+        """Backup warning for the digest, or None while safe. Never raises."""
+        try:
+            from .backup import status_line
+            return status_line(self)
+        except Exception:
+            return None
 
     def _scoped_checkpoints(self, checkpoints: int,
                             project: Optional[str],

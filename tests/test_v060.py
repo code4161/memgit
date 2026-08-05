@@ -565,13 +565,46 @@ class TestTokenBudget:
         assert added_tokens <= 250, f"new sections cost ~{added_tokens:.0f} tokens"
 
     def test_resume_bounded_on_large_store(self, repo):
+        """Steady state — a store WITH a backup — must stay under budget.
+
+        This is the case that runs every session for a healthy store, so it is
+        the one the bound has to hold for.
+        """
         from memgit.cli import _format_resume_plain
+        from memgit.backup import read_state, write_state
+        from datetime import datetime, timezone
         self._big_store(repo)
         for i in range(9):
             repo.add(_mk(f"e{i}-status", type_code="tr", rule="state " * 10))
+        state = read_state(repo)
+        state.last_ok = datetime.now(timezone.utc).isoformat()
+        write_state(repo, state)
         text = _format_resume_plain(repo.resume_context())
         approx_tokens = len(text) / 4  # chars/4 heuristic
         assert approx_tokens <= 900, f"digest too big: ~{approx_tokens:.0f} tokens"
+
+    def test_durability_warning_is_cheap_and_self_clearing(self, repo):
+        """With no backup the digest carries a warning; it costs ~20 tokens and
+        disappears the moment a backup exists (including an automatic one), so
+        the steady-state digest is unchanged by this feature."""
+        from memgit.cli import _format_resume_plain
+        from memgit.backup import read_state, write_state
+        from datetime import datetime, timezone
+        self._big_store(repo)
+        for i in range(9):
+            repo.add(_mk(f"e{i}-status", type_code="tr", rule="state " * 10))
+
+        warned = _format_resume_plain(repo.resume_context())
+        assert "backup" in warned.lower()
+        assert len(warned) / 4 <= 930, "the warning itself must stay small"
+
+        state = read_state(repo)
+        state.last_ok = datetime.now(timezone.utc).isoformat()
+        write_state(repo, state)
+        clean = _format_resume_plain(repo.resume_context())
+        assert "Durability" not in clean
+        assert (len(warned) - len(clean)) / 4 <= 30, \
+            "durability warning must cost under ~30 tokens"
 
     def test_server_description_pins_authority_framing(self):
         from memgit.mcp_server import _SERVER_DESCRIPTION, _TYPE_DESCRIPTIONS

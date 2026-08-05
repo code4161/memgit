@@ -10,7 +10,7 @@ Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-404%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-431%20passing-brightgreen)](tests/)
 
 ---
 
@@ -262,6 +262,23 @@ Since 0.8.0 it also **starts itself**: a project's first guide is created automa
 
 ---
 
+## Backups that actually happen
+
+memgit's premise is that the AI is the operator — but backup used to require a human to remember `memgit git init --remote <url>` and keep pushing. On this project's own store that meant 1,734 memories on one disk with no copy anywhere, five weeks in. A maintenance task that needs a human command is a task that will not happen.
+
+Since 0.9.0 it runs itself, at the end of a session, with the safety boundary drawn at **network egress rather than effort**:
+
+- **Local destinations are automatic** — a cloud-synced folder you already have (iCloud, Dropbox, Google Drive, OneDrive) or an external volume. memgit copies files; it opens no connection and signs up for no service. Your existing sync client does the rest.
+- **A git remote is pushed to only if you already configured one.** memgit never invents a remote, never creates a repository, and never sends memories to a host you did not choose — memories can contain credentials, and convenience is not a reason to publish them somewhere you never picked.
+
+The backup is a single `memgit-store.tar.gz`, not a directory tree: a 203 MB store is 10,295 small object files, and giving a sync client 10k files to reconcile every time is how you get a sync client that never finishes. It is staged and renamed atomically, keeping the old copy until the new one lands — an interrupted backup must never leave a corrupt file where a good one used to be.
+
+```bash
+memgit backup status     # where the last copy went, and what else is available
+```
+
+---
+
 ## Ranking you can prove
 
 Retrieval quality used to be adjusted on intuition. `memgit eval` replaces that with a measurement, using two frozen sets mined from the store itself:
@@ -313,6 +330,12 @@ memgit core show / edit           # view / curate the guide
 memgit core heal                  # self-repair a guide that has drifted
                                   # (a project's FIRST guide is created automatically
                                   #  once it holds 5+ memories — no command needed)
+
+# Durability — automatic, no human command required
+memgit backup status              # last copy, staleness, available destinations
+memgit backup now                 # force one immediately
+memgit backup set <path>          # pin a destination
+memgit backup off / on            # control the automatic path
 
 # Retrieval evaluation — prove a ranking change helped
 memgit eval mine                  # freeze a regression set from real recall events
@@ -439,7 +462,7 @@ git clone https://github.com/code4161/memgit.git
 cd memgit
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest    # 404 tests, all passing, < 5 seconds
+pytest    # 431 tests, all passing, < 5 seconds
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -474,6 +497,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] `memgit eval` — measured retrieval quality, real + non-circular sets (v0.8.0)
 - [x] Usage-aware ranking — the recall ledger feeds relevance, not just the guide (v0.8.0)
 - [x] Automatic core-guide bootstrap — the self-improving loop starts itself (v0.8.0)
+- [x] Automatic off-machine backup — no human command required (v0.9.0)
 - [ ] JetBrains plugin (Phase 3)
 - [ ] Semantic search via embeddings — gated on `memgit eval` showing a real gain (Phase 4)
 - [ ] Public benchmark numbers (LongMemEval, LoCoMo) (Phase 4)

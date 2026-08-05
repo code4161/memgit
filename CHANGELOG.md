@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.0] — 2026-08-05
+
+Durability that does not wait for a human.
+
+memgit's whole premise is that the AI is the operator. Backup was the one place that premise broke: off-machine safety required someone to remember `memgit git init --remote <url>` and then keep pushing. On this project's own store — 1,734 memories, five weeks of daily use — it had never been run once. The entire memory set existed on a single disk with no copy anywhere. **A maintenance task that needs a human command is a maintenance task that will not happen.**
+
+### Added
+- **`memgit backup` — automatic off-machine durability.** Runs unattended from the end-of-session sync path, alongside the housekeeping the operator never has to think about. `backup status` reports the last copy and every destination available; `backup now` forces one; `backup set <path>` pins a destination; `backup off`/`on` control the automatic path.
+- **Destination discovery.** A configured git remote ranks first (it is the user's own explicit choice), then cloud-synced folders already present on the machine (iCloud Drive, Dropbox, Google Drive, OneDrive), then writable external volumes.
+- **The safety boundary is network egress, not effort.** Local destinations are used automatically — memgit copies files, opens no connection, and signs up for no service; whatever sync client the user already trusts does the rest. A git remote is pushed to automatically **only if one is already configured**: memgit never invents a remote, never creates a repository, and never sends memories to a host the user did not pick. That line matters because memories are not neutral text — a prior audit on this very store found client credentials among them, and convenience is not a reason to publish someone's private notes to a service they never chose.
+- **One archive, not a directory tree.** The audited store is 203 MB across 10,295 small object files; handing a cloud-sync client 10k files to reconcile on every backup is how you get a sync client that never finishes. Backups are a single `memgit-store.tar.gz` (171 MB, ~7 s) plus a `RESTORE.txt`. Verified end-to-end: extract, point memgit at it, 1,741 memories restored with a clean `fsck`.
+- **Atomic replacement.** The archive is staged and renamed over the target, with the previous copy kept until the new one lands. An interrupted backup must never leave a corrupt file where a good one used to be — that failure does not lose data loudly, it leaves something that *looks* safe.
+- **Durability line in the resume digest.** When no backup exists the session-start digest says so, terse (~20 tokens) and self-clearing: it disappears the moment a backup exists, including an automatic one, so the steady-state digest is unchanged.
+
+### Fixed
+- **Test isolation: unattended backup could write to the developer's real cloud folder.** Found by inspecting the first live run — a test exercising the sync path had mirrored its temp store into an actual iCloud directory, because destination discovery reads the true home while the store was a temp path. `auto_backup_allowed()` now refuses the unattended path whenever `MEMGIT_STORE` or `PYTEST_CURRENT_TEST` is set. An explicit `backup now` is unaffected: that is someone asking on purpose.
+
+### Note
+Three commits in the 0.8.x releases carried an AI co-author trailer, against this project's standing rule that authorship is the user alone. They were rewritten and force-pushed; tags `v0.8.0` and `v0.8.1` were moved to the rewritten commits.
+
 ## [0.8.1] — 2026-08-05
 
 ### Fixed

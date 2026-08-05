@@ -485,6 +485,13 @@ def _maybe_auto_core(repo) -> None:
         repo.gc_caches()
     except Exception:
         pass
+    # Durability, unattended. A backup that needs someone to remember a command
+    # is a backup that does not exist — measured: zero in five weeks of use.
+    try:
+        from .backup import maybe_auto_backup
+        maybe_auto_backup(repo)
+    except Exception:
+        pass
 
 
 @core.command('refresh')
@@ -715,6 +722,8 @@ def resume(checkpoints, recent, plain, fmt_json, project):
                       f'[dim](memgit search "<topic>")[/dim]')
     if ctx.get('maintenance'):
         console.print(f'\n[yellow]maintenance:[/yellow] {ctx["maintenance"]}')
+    if ctx.get('durability'):
+        console.print(f'\n[red]durability:[/red] {ctx["durability"]}')
     console.print()
 
 
@@ -855,6 +864,12 @@ def _render_resume_plain(ctx: dict) -> str:
     if ctx.get('maintenance'):
         lines.append('')
         lines.append(f'## Maintenance needed\n- {ctx["maintenance"]}')
+    # Durability is separate from maintenance and never trimmed: a store with
+    # no copy anywhere is one disk failure from total loss, and the operator
+    # who has to act on it is the agent reading this digest.
+    if ctx.get('durability'):
+        lines.append('')
+        lines.append(f'## Durability\n- {ctx["durability"]}')
     if ctx.get('project_is_new'):
         lines.append('')
         lines.append(
@@ -1961,6 +1976,109 @@ def metrics(fmt_json, reset):
         console.print(f'  {acted:,} of {adv:,} advertised hints were acted on '
                       f'(searched within {30} min) — [bold]{pct}%[/bold]')
     console.print()
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def backup(ctx):
+    """Off-machine durability — automatic, no human command required.
+
+    Local destinations (a cloud-synced folder you already have, an external
+    volume) are used automatically: memgit copies files and opens no network
+    connection. A git remote is pushed to only if you have already configured
+    one — memgit never invents a remote or creates a repository, because
+    memories can contain credentials and must not land on a service you did
+    not choose.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(backup_status)
+
+
+@backup.command('status')
+def backup_status():
+    """Where the last copy went, how old it is, and what else is available."""
+    repo = _require_repo()
+    from .backup import (read_state, detect_destinations, hours_since_backup,
+                         STALE_AFTER_HOURS)
+    state = read_state(repo)
+    age = hours_since_backup(repo)
+
+    if state.disabled:
+        console.print('[yellow]backup disabled[/yellow] — re-enable with '
+                      '`memgit backup on`')
+    elif age is None:
+        console.print(f'[red]no backup has ever run[/red] — '
+                      f'{len(repo.list())} memories exist on one disk')
+    else:
+        colour = 'green' if age < STALE_AFTER_HOURS else 'yellow'
+        when = f'{age:.1f}h ago' if age < 48 else f'{age / 24:.1f}d ago'
+        console.print(f'[{colour}]last backup {when}[/{colour}]  '
+                      f'[dim]{state.memories} memories → {state.last_target}[/dim]')
+    if state.last_error:
+        console.print(f'  [red]last error:[/red] {state.last_error}')
+
+    dests = detect_destinations(repo)
+    console.print()
+    if not dests:
+        console.print('[yellow]no destination available[/yellow] — no git remote '
+                      'configured, no cloud-synced folder or external volume found.')
+        console.print('[dim]Set one explicitly: `memgit backup set <path>`[/dim]')
+        return
+    console.print('[bold]Available destinations[/bold] [dim](best first)[/dim]')
+    for d in dests:
+        mark = '[green]auto[/green]' if d.auto_ok else '[yellow]ask[/yellow]'
+        console.print(f'  {mark}  {d.label:24} [dim]{d.target}[/dim]')
+
+
+@backup.command('now')
+@click.option('--to', 'to_path', default=None,
+              help='Explicit destination path (overrides auto-detection)')
+def backup_now(to_path):
+    """Back up immediately."""
+    repo = _require_repo()
+    from .backup import run_backup, Destination
+    dest = Destination('path', 'explicit', to_path, True) if to_path else None
+    ok, msg = run_backup(repo, dest)
+    if ok:
+        console.print(f'[green]backup ok[/green] — {msg}')
+    else:
+        err.print(f'[red]{msg}[/red]')
+        sys.exit(1)
+
+
+@backup.command('set')
+@click.argument('path')
+def backup_set(path):
+    """Pin a destination directory for every future backup."""
+    repo = _require_repo()
+    from .backup import read_state, write_state
+    state = read_state(repo)
+    state.pinned = str(Path(path).expanduser())
+    state.disabled = False
+    write_state(repo, state)
+    console.print(f'[green]backup destination pinned[/green] → {state.pinned}')
+
+
+@backup.command('off')
+def backup_off():
+    """Stop automatic backups."""
+    repo = _require_repo()
+    from .backup import read_state, write_state
+    state = read_state(repo)
+    state.disabled = True
+    write_state(repo, state)
+    console.print('[yellow]automatic backup disabled[/yellow]')
+
+
+@backup.command('on')
+def backup_on():
+    """Resume automatic backups."""
+    repo = _require_repo()
+    from .backup import read_state, write_state
+    state = read_state(repo)
+    state.disabled = False
+    write_state(repo, state)
+    console.print('[green]automatic backup enabled[/green]')
 
 
 @cli.group(invoke_without_command=True)
