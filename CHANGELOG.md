@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.1] — 2026-08-14
+
+Findable where the users actually are.
+
+memgit ships on five package channels and appeared on **zero** MCP discovery surfaces. Glama auto-crawls 72,234 servers and did not list us, while competitors did; a search for "memgit MCP server" returned other projects entirely. The registries were never going to find us on their own, because the metadata they read did not exist in this repo. That is a distribution gap, not a product gap — and it means the absence of inbound interest had never actually been tested.
+
+### Added
+- **`server.json` — the official MCP Registry manifest.** Validates against the `2025-12-11` schema and declares **both** install routes, since the registry stores metadata only and both artifacts already exist: `memgit-mcp` on npm and `memgit` on PyPI (invoked as `memgit serve`), each over stdio. No required environment variables, so the zero-config path is preserved.
+- **Namespace `dev.memgit/memgit`**, the reverse-DNS form of a domain we own, proven by DNS rather than by a GitHub account. Chosen before the first publish deliberately: the registry treats a name change as a *separate* server entry, not a rename.
+- **Ownership markers.** `mcpName` in the npm package manifest, and an `mcp-name:` comment in this README — the two things the registry reads from the *published* artifacts to prove the packages are ours.
+
+### Note
+This release exists to carry that metadata to npm and PyPI. Ownership verification reads what is published, not what is committed, so the markers only take effect from this version onward.
+
 ## [0.9.0] — 2026-08-05
 
 Durability that does not wait for a human.

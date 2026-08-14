@@ -3,7 +3,7 @@
   "name": "dev.memgit/memgit",
   "title": "memgit",
   "description": "Git for AI memory \u2014 version-controlled, searchable context that persists across sessions",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "websiteUrl": "https://memgit.dev",
   "repository": {
     "url": "https://github.com/code4161/memgit",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "memgit-mcp",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "transport": {
         "type": "stdio"
       }
@@ -23,7 +23,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "memgit",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "transport": {
         "type": "stdio"
       },
