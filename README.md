@@ -2,6 +2,8 @@
   <img src="assets/logo.png" alt="memgit logo" width="120" />
 </p>
 
+<!-- mcp-name: dev.memgit/memgit -->
+
 # memgit — git for AI memory
 
 **Your AI assistants forget everything when the session ends. memgit fixes that.**
