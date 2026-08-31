@@ -39,3 +39,5 @@ memgit-store/
 # Internal tracking — not for public repo
 PUBLISHING.md
 website/
+config.bat
+node_modules

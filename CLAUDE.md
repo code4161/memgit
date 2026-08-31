@@ -22,3 +22,16 @@ site-packages — **this checkout is not the live tool**.
   gates. No money on memgit-cloud until the free test converts.
 
 Doc: [MEMGIT_NEXT_STEPS.md](MEMGIT_NEXT_STEPS.md). Group map: [../CLAUDE.md](../CLAUDE.md).
+
+## 🔴 CORE RULE — no conflicting or stale memory (workspace-wide, 2026-08-31)
+
+`save_memory` is not append-only in effect: a stale memory competes with its own
+correction and can OUTRANK it in search. Before every save — `search_memories` on the
+QUANTITY, and if an existing memory states a different value, **re-save that one or pass
+`supersedes`**. Correct the `rule` line, not just the body (search and digests render the
+rule). If a correction inverts a finding, the **slug** changes too. `lx` lessons carry no
+operational directives ("do not arm") — those expire with state, and state lives in the
+`tr` tracker. `save_memory` on an existing slug REPLACES: always resend the full body.
+Close the loop — re-search what you wrote and read the top hit.
+
+Full doctrine: [root CLAUDE.md §1a](../../CLAUDE.md).
