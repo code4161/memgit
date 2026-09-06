@@ -4,15 +4,64 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to pack and push (defaults to the latest v* tag)"
+        required: false
 
 jobs:
   publish:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The nuspec and the install script used to carry a HARDCODED version.
+      # It was last bumped for 0.9.0 and then missed on every release, so the
+      # tag said 0.10.0 while the workflow happily packed and pushed 0.9.0 —
+      # a green run that shipped the wrong thing. The version now comes from
+      # the tag, so it cannot drift again.
+      - name: Resolve version
+        id: v
+        run: |
+          if ("${{ github.event.inputs.version }}") {
+            $v = "${{ github.event.inputs.version }}"
+          } elseif ("${{ github.ref }}" -like "refs/tags/v*") {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $v = (git describe --tags --abbrev=0 --match "v*").TrimStart("v")
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "resolved version: $v"
+        shell: pwsh
+
+      - name: Stamp version into nuspec and install script
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          $ns = "chocolatey/memgit.nuspec"
+          (Get-Content $ns -Raw) -replace '<version>[^<]*</version>', "<version>$v</version>" | Set-Content $ns -NoNewline
+          $ps = "chocolatey/tools/chocolateyInstall.ps1"
+          (Get-Content $ps -Raw) -replace "memgit==[0-9]+\.[0-9]+\.[0-9]+", "memgit==$v" | Set-Content $ps -NoNewline
+          Select-String -Path $ns -Pattern "<version>"
+          Select-String -Path $ps -Pattern "memgit=="
+        shell: pwsh
 
       - name: Pack Chocolatey package
         run: choco pack chocolatey/memgit.nuspec
+        shell: pwsh
+
+      # Assert the artifact is the version we meant. The old workflow packed
+      # 0.9.0 under a 0.10.0 tag and reported success.
+      - name: Verify packed version
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          $pkg = Get-ChildItem -Filter "memgit.*.nupkg" | Select-Object -First 1
+          if ($pkg.Name -ne "memgit.$v.nupkg") {
+            throw "packed $($pkg.Name) but expected memgit.$v.nupkg"
+          }
+          Write-Host "ok: $($pkg.Name)"
         shell: pwsh
 
       - name: Push to Chocolatey
