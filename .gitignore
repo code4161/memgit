@@ -39,3 +39,11 @@ memgit-store/
 # Internal tracking — not for public repo
 PUBLISHING.md
 website/
+
+# Secrets — never commit. Added 2026-09-06 after a .env was pushed to this public repo.
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
