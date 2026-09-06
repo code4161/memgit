@@ -15,7 +15,7 @@ from typing import Optional
 from .models import (
     Checkpoint, DiffSummary, MindState, MindStateEntry, Mnemonic, Thread,
 )
-from .store import ObjectStore
+from .store import ObjectStore, object_cache as _object_cache
 
 
 def default_store_candidates() -> list[Path]:
@@ -320,14 +320,88 @@ class Repository:
         sha = index.get(slug)
         return self.store.read_mnemonic(sha) if sha else None
 
+    #: Filename of the pre-parsed corpus pool (see `_prime_from_snapshot`).
+    _SNAPSHOT = 'corpus.json'
+
+    def _snapshot_path(self) -> Path:
+        return self.path / 'cache' / self._SNAPSHOT
+
+    def _prime_from_snapshot(self, wanted: set[str]) -> None:
+        """Bulk-fill the parsed-object cache from one file instead of N gzips.
+
+        The pool is keyed by SHA, and a SHA identifies its content, so a row
+        can never be stale: an entry for a memory that has since been edited
+        simply belongs to a SHA nobody asks for any more. That is why this
+        needs no invalidation logic and no fingerprint — the correctness comes
+        from content addressing, exactly as it does for the in-process cache.
+        A missing, truncated or unreadable pool is not an error: every SHA it
+        fails to supply is read from the object store as before.
+        """
+        try:
+            rows = json.loads(self._snapshot_path().read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            try:
+                sha = row.get('sha')
+                if sha not in wanted or sha in _object_cache():
+                    continue
+                ts = row.get('timestamp')
+                fields = {k: v for k, v in row.items() if k != 'timestamp'}
+                _object_cache()[sha] = Mnemonic(
+                    timestamp=datetime.fromisoformat(ts) if ts else None, **fields)
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+    def _write_snapshot(self, mnemonics: list[Mnemonic]) -> None:
+        """Rewrite the pool. Atomic, best-effort, never fatal.
+
+        Written by whichever process paid the cold load, so the next session on
+        this machine does not pay it again. Concurrent writers are safe: for a
+        given set of memories they produce the same bytes, and the rename is
+        atomic, so a reader sees either the old complete file or the new one.
+        """
+        rows = []
+        for m in mnemonics:
+            if not m.sha:
+                continue
+            d = dict(m.__dict__)
+            d['timestamp'] = m.timestamp.isoformat() if m.timestamp else None
+            rows.append(d)
+        path = self._snapshot_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.json.tmp')
+            tmp.write_text(json.dumps(rows, separators=(',', ':')), encoding='utf-8')
+            tmp.replace(path)
+        except (OSError, TypeError, ValueError):
+            try:
+                tmp.unlink(missing_ok=True)
+            except (OSError, UnboundLocalError):
+                pass
+
     def list(self) -> list[Mnemonic]:
         index = self.get_index()
+        shas = set(index.values())
+        cache = _object_cache()
+        cold = [s for s in shas if s not in cache]
+        if cold:
+            self._prime_from_snapshot(shas)
+            missed = [s for s in cold if s not in cache]
+        else:
+            missed = []
         result = []
         for slug, sha in index.items():
             try:
                 result.append(self.store.read_mnemonic(sha))
             except Exception:
                 pass
+        # Rewrite the pool when it did not supply everything this load needed,
+        # which covers both a missing file and one that has fallen behind.
+        if missed or (cold and not self._snapshot_path().exists()):
+            self._write_snapshot(result)
         return result
 
     # ── Commit ────────────────────────────────────────────────────────────────

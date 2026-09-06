@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memgit"
-version = "0.9.1"
+version = "0.10.0"
 description = "Git for AI memory — version-controlled context persistence across Claude, GPT, Gemini, Cursor, Windsurf, and more"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,14 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "rich>=13.0",
-    "mcp>=1.0.0",
+    # UPPER BOUND IS LOAD-BEARING, added 2026-09-06. The MCP SDK released 2.0.0
+    # on 2026-07-28 and removed `Server.list_tools` / `Server.call_tool`, so an
+    # unbounded `mcp>=1.0.0` resolved to 2.1.1 and every fresh install crashed
+    # on startup with AttributeError before serving a single request. Both
+    # install routes were affected: pip directly, and the npm wrapper, which
+    # runs `pip install --upgrade memgit` into a clean venv. Raise this bound
+    # only together with a server that works on the new API.
+    "mcp>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]

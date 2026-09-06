@@ -1,7 +1,9 @@
 """memgit MCP server — exposes memory search/get/list/save over stdio MCP protocol."""
 
 from __future__ import annotations
+import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from mcp.types import (
     Tool,
 )
 
+from . import __version__
 from .models import Mnemonic
 from .repo import Repository
 from .scorer import score as bm25_score
@@ -148,13 +151,101 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None,
     return d
 
 
+#: A stdio server lives as long as its host, and an AI host can stay open all
+#: day. Measured 2026-09-06 on this machine: six servers with living Claude Code
+#: parents, ages over seven hours, two of them still holding 126 MB and 112 MB
+#: because nothing ever released the caches that made search fast. The corpus
+#: pool makes a reload cost ~40 ms, so holding that memory through a long idle
+#: period buys nothing. Evict instead of exiting: exiting would be a lifecycle
+#: gamble on every MCP host reconnecting, and it is not needed to free the RAM.
+IDLE_EVICT_SECONDS = float(os.environ.get("MEMGIT_IDLE_EVICT_SECONDS", "900"))
+#: How often the housekeeping task wakes. Cheap: two integer comparisons.
+HOUSEKEEPING_INTERVAL_SECONDS = float(
+    os.environ.get("MEMGIT_HOUSEKEEPING_INTERVAL", "30"))
+
+_last_activity = time.monotonic()
+_original_ppid = None
+
+
+def note_activity() -> None:
+    """Mark the server as in use. Called on every tool invocation."""
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+def is_orphaned(ppid: int, original_ppid: int | None) -> bool:
+    """True when the host that started this server is gone.
+
+    On Unix a child whose parent dies is reparented to init (pid 1), so a ppid
+    that has become 1 when it did not start that way means nobody is left to
+    talk to us. Closed stdin normally ends the process first; this is the
+    backstop for the case where it does not, and it is deliberately narrow —
+    a server legitimately started BY init is never treated as orphaned.
+    """
+    if original_ppid is None or original_ppid == 1:
+        return False
+    return ppid == 1
+
+
+def should_evict(idle_seconds: float, threshold: float = None) -> bool:
+    """True when the caches have gone unused long enough to be worth dropping."""
+    limit = IDLE_EVICT_SECONDS if threshold is None else threshold
+    return limit > 0 and idle_seconds >= limit
+
+
+def housekeeping_tick(now: float = None, ppid: int = None) -> str:
+    """One pass of the idle/orphan check. Returns what it did, for tests.
+
+    Split out of the async loop on purpose: the decisions are pure, so they can
+    be tested without a running event loop or a live host.
+    """
+    now = time.monotonic() if now is None else now
+    ppid = os.getppid() if ppid is None else ppid
+    if is_orphaned(ppid, _original_ppid):
+        return "orphaned"
+    if should_evict(now - _last_activity):
+        from .store import object_cache, clear_object_cache
+        from .scorer import clear_token_cache
+        if object_cache():
+            clear_object_cache()
+            clear_token_cache()
+            return "evicted"
+    return "idle"
+
+
+def _require_compatible_sdk() -> None:
+    """Fail loudly and legibly on an MCP SDK this server cannot drive.
+
+    The SDK's 2.0 release removed the decorators below. Without this check the
+    failure was an AttributeError traceback on stderr — which MCP hosts do not
+    show — so the user saw only "the server failed to start" with no cause.
+    """
+    if hasattr(Server, "list_tools") and hasattr(Server, "call_tool"):
+        return
+    try:
+        from importlib.metadata import version
+        found = version("mcp")
+    except Exception:
+        found = "unknown"
+    sys.stderr.write(
+        f"memgit: the installed MCP SDK (mcp {found}) is not compatible with "
+        f"this version of memgit — it no longer provides Server.list_tools.\n"
+        f"memgit needs mcp 1.x. Fix with:  pip install 'mcp>=1.0.0,<2'\n"
+        f"(If you installed through npx memgit-mcp, delete "
+        f"~/.memgit-npm-venv and run it again.)\n")
+    raise SystemExit(1)
+
+
 def run_server(store_path: Path | None = None) -> None:
     """Run the MCP server on stdio."""
-    global _startup_project
+    global _startup_project, _original_ppid
+    _require_compatible_sdk()
+    _original_ppid = os.getppid()
     _startup_project = _detect_project()
 
     server = Server(
         "memgit",
+        version=__version__,
         instructions=_SERVER_DESCRIPTION,
     )
 
@@ -493,6 +584,7 @@ def run_server(store_path: Path | None = None) -> None:
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         import json
 
+        note_activity()
         repo = _load_repo(store_path)
         if repo is None:
             return [TextContent(
@@ -865,12 +957,30 @@ def run_server(store_path: Path | None = None) -> None:
     # Run
     import asyncio
 
+    async def _housekeeping():
+        """Release idle memory, and stop if the host that started us is gone."""
+        while True:
+            await asyncio.sleep(HOUSEKEEPING_INTERVAL_SECONDS)
+            if housekeeping_tick() == "orphaned":
+                return
+
     async def _main():
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(
+            keeper = asyncio.create_task(_housekeeping())
+            serve = asyncio.create_task(server.run(
                 read_stream,
                 write_stream,
                 server.create_initialization_options(),
-            )
+            ))
+            # Whichever finishes first ends the process: normally that is the
+            # stdio server seeing EOF; the housekeeper returns only when it has
+            # found the parent gone, which is the case EOF failed to catch.
+            done, pending = await asyncio.wait(
+                {keeper, serve}, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                if task is serve:
+                    task.result()
 
     asyncio.run(_main())

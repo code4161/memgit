@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from memgit.models import Mnemonic, MindState, MindStateEntry, Checkpoint, DiffSummary
+from memgit import store
 from memgit.store import ObjectStore
 from memgit.repo import Repository
 
@@ -249,3 +250,186 @@ class TestRepository:
         repo.thread_switch('main')
         assert repo.get('client-specific') is None
         assert repo.get('shared-rule') is not None
+
+
+class TestObjectCache:
+    """The parsed-object cache added 2026-09-06.
+
+    `Repository.list()` re-read and re-parsed every object on every call, so a
+    session that searched five times paid the full corpus load five times
+    (measured on a 4,075-memory store: 1,040 ms per call, of which 718 ms was
+    parsing). Objects are content-addressed, so a SHA-keyed cache can never
+    serve stale content — but it must never hand out the instance it keeps,
+    because callers mutate what they are given and then re-save it.
+    """
+
+    def setup_method(self):
+        store.clear_object_cache()
+
+    def teardown_method(self):
+        store.clear_object_cache()
+
+    def test_second_read_returns_equal_content(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='cached-one', rule='first'))
+        a = s.read_mnemonic(sha)
+        b = s.read_mnemonic(sha)
+        assert a.slug == b.slug == 'cached-one'
+        assert a.rule == b.rule == 'first'
+        assert a.sha == b.sha == sha
+
+    def test_cache_never_hands_out_the_same_instance(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='distinct-instances'))
+        assert s.read_mnemonic(sha) is not s.read_mnemonic(sha)
+
+    def test_mutating_a_result_does_not_poison_the_cache(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='mutate-me', rule='original'))
+        first = s.read_mnemonic(sha)
+        first.rule = 'clobbered'
+        first.slug = 'renamed'
+        first.unverified = True
+        second = s.read_mnemonic(sha)
+        assert second.rule == 'original'
+        assert second.slug == 'mutate-me'
+        assert second.unverified is False
+
+    def test_mutating_result_lists_does_not_poison_the_cache(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='list-fields'))
+        first = s.read_mnemonic(sha)
+        first.tags.append('injected')
+        first.related.append('some-other-slug')
+        first.supersedes.append('an-old-slug')
+        second = s.read_mnemonic(sha)
+        assert second.tags == ['testing']
+        assert second.related == []
+        assert second.supersedes == []
+
+    def test_editing_a_memory_is_a_new_sha_so_the_cache_misses(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha_a = s.write_mnemonic(make_mnemonic(slug='evolves', rule='before'))
+        s.read_mnemonic(sha_a)
+        sha_b = s.write_mnemonic(make_mnemonic(slug='evolves', rule='after'))
+        assert sha_a != sha_b
+        assert s.read_mnemonic(sha_a).rule == 'before'
+        assert s.read_mnemonic(sha_b).rule == 'after'
+
+    def test_abbreviated_sha_is_not_cached_under_the_abbreviation(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='abbrev', rule='full only'))
+        s.read_mnemonic(sha[:10])
+        assert sha[:10] not in store._OBJECT_CACHE
+        assert sha in store._OBJECT_CACHE or s.read_mnemonic(sha).rule == 'full only'
+
+    def test_clear_object_cache_empties_it(self, tmp_path):
+        s = ObjectStore(tmp_path)
+        sha = s.write_mnemonic(make_mnemonic(slug='clearable'))
+        s.read_mnemonic(sha)
+        assert store._OBJECT_CACHE
+        store.clear_object_cache()
+        assert not store._OBJECT_CACHE
+        assert s.read_mnemonic(sha).slug == 'clearable'
+
+    def test_repository_list_is_served_from_the_cache(self, tmp_path):
+        repo = Repository.init(tmp_path)
+        for i in range(5):
+            repo.add(make_mnemonic(slug=f'listed-{i}', rule=f'rule {i}'))
+        first = {m.slug: m.rule for m in repo.list()}
+        second = {m.slug: m.rule for m in repo.list()}
+        assert first == second
+        assert len(first) == 5
+        # and the objects handed out are still independent copies
+        a, b = repo.list(), repo.list()
+        a[0].rule = 'mutated in place'
+        assert b[0].rule != 'mutated in place'
+        assert repo.list()[0].rule != 'mutated in place'
+
+
+class TestCorpusSnapshot:
+    """The shared pre-parsed corpus pool added 2026-09-06.
+
+    The in-process cache fixes repeat calls; it does nothing for a NEW process,
+    and every Claude session starts one. A cold `list()` on a 4,075-memory
+    store measured 1,486 ms because it opened and parsed 4,075 gzip files. The
+    pool makes that one read of one file (measured 48 ms). It is keyed by SHA,
+    so it needs no invalidation: a row for an edited memory belongs to a SHA
+    nobody asks for any more.
+    """
+
+    def setup_method(self):
+        store.clear_object_cache()
+
+    def teardown_method(self):
+        store.clear_object_cache()
+
+    def _repo_with(self, tmp_path, n=4):
+        repo = Repository.init(tmp_path)
+        for i in range(n):
+            repo.add(make_mnemonic(slug=f'pooled-{i}', rule=f'rule {i}'))
+        return repo
+
+    def test_cold_list_writes_the_pool(self, tmp_path):
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo.list()
+        assert repo._snapshot_path().is_file()
+
+    def test_pool_serves_a_process_that_cannot_read_the_objects(self, tmp_path):
+        """The load path really comes from the pool, not from the object store."""
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo.list()                      # builds the pool
+        store.clear_object_cache()       # a fresh process
+        objects = repo.path / 'objects'
+        objects.rename(repo.path / 'objects-moved-aside')
+        try:
+            slugs = sorted(m.slug for m in repo.list())
+            assert slugs == ['pooled-0', 'pooled-1', 'pooled-2', 'pooled-3']
+        finally:
+            (repo.path / 'objects-moved-aside').rename(objects)
+
+    def test_pool_entries_are_still_caller_safe_copies(self, tmp_path):
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo.list()
+        store.clear_object_cache()
+        first = repo.list()
+        first[0].rule = 'clobbered'
+        first[0].tags.append('injected')
+        second = {m.slug: m for m in repo.list()}
+        assert second[first[0].slug].rule != 'clobbered'
+        assert 'injected' not in second[first[0].slug].tags
+
+    def test_a_corrupt_pool_is_ignored_not_fatal(self, tmp_path):
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo.list()
+        repo._snapshot_path().write_text('{ this is not json', encoding='utf-8')
+        store.clear_object_cache()
+        assert len(repo.list()) == 4
+
+    def test_a_missing_pool_is_ignored_not_fatal(self, tmp_path):
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo._snapshot_path().unlink(missing_ok=True)
+        assert len(repo.list()) == 4
+
+    def test_an_edited_memory_is_picked_up_and_the_pool_is_rewritten(self, tmp_path):
+        repo = self._repo_with(tmp_path)
+        store.clear_object_cache()
+        repo.list()
+        repo.add(make_mnemonic(slug='pooled-0', rule='edited after the pool was written'))
+        store.clear_object_cache()
+        by_slug = {m.slug: m.rule for m in repo.list()}
+        assert by_slug['pooled-0'] == 'edited after the pool was written'
+        # the rewrite means a later cold process sees the edit without the objects
+        store.clear_object_cache()
+        objects = repo.path / 'objects'
+        objects.rename(repo.path / 'objects-moved-aside')
+        try:
+            again = {m.slug: m.rule for m in repo.list()}
+            assert again['pooled-0'] == 'edited after the pool was written'
+        finally:
+            (repo.path / 'objects-moved-aside').rename(objects)

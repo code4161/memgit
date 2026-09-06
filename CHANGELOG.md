@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.10.0] — 2026-09-06
+
+The server starts again, stops when you do, and stops re-reading the whole store.
+
+Three things were wrong at once and only one of them was known. The MCP SDK released 2.0 on 2026-07-28; memgit asked for `mcp>=1.0.0` with no upper bound, so from that day every fresh install resolved to 2.x, which removed the decorators this server is built on, and **the server crashed on startup before answering a single request**. Both routes were affected: pip, and the npm wrapper, which installs memgit into a clean venv on first run. Separately, a stdio server lives as long as its host and an AI host stays open all day — measured here as six servers with living parents aged over seven hours, two of them still holding 126 MB and 112 MB — because nothing ever released the caches. And the thing filling those caches was rebuilding them from scratch on every single call.
+
+### Fixed
+- **`mcp` is pinned below 2.0, which is what makes memgit installable again.** The upper bound is the fix; the rest of this entry is what was found while proving it. Measured: a clean `pip install memgit` resolved `mcp 2.1.1`, and `memgit serve` died with `AttributeError: 'Server' object has no attribute 'list_tools'`. With the pin it resolves 1.29.1, starts, and answers `initialize`.
+- **An incompatible SDK now says so, in words, with the command that fixes it.** MCP hosts do not surface a server's stderr, so the old failure reached the user as "the server failed to start" with no cause. The check runs before the decorators are touched and names the version found, the version needed, and the extra step for the npm route.
+- **The server reports its own version again.** `Server()` was constructed without `version=`, so the MCP SDK filled in its own: every host displayed memgit's version as `1.29.1`. On a defect whose only symptom is silence, that was the one field that could have told anyone which memgit they were running.
+
+### Added
+- **The server releases its memory when it goes idle**, dropping the parsed-object and tokenization caches after 15 minutes with no tool call (`MEMGIT_IDLE_EVICT_SECONDS`). Eviction rather than exit: exiting would gamble on every MCP host reconnecting, and it is not needed to free the memory — the corpus pool below makes a reload cost about 40 ms.
+- **An orphan watchdog.** Closed stdin already ends the process when a host exits, verified end to end (1 second after a `SIGKILL` of the parent). This is the backstop for when it does not: a server whose parent has become pid 1, having not started that way, stops.
+
+- **`memgit pro activate | status | deactivate`** — a Polar-issued licence key, validated against Polar's public customer-portal endpoint and cached at `~/.memgit/license.json` (0600). Fail-open with a 14-day grace window, 24-hour recheck cadence, key never echoed in full. `MEMGIT_LICENSE_KEY` serves headless MCP hosts and is never written to disk.
+- **No new dependency.** The check uses `urllib`; plain memgit stays `click + rich + mcp`.
+- **Cloud attach.** When the store is logged in to memgit cloud, activation also upgrades the hosted account (`POST /v1/billing/polar/activate`).
+
+- **`memgit savings` — what memory cost, against what finding the same fact would have cost.** `memgit metrics` refuses to print a savings figure, and its reasoning holds for the naive counterfactual: you cannot observe a file read that did not happen. A *stated* counterfactual is a different question and it is measurable. Without memgit, an agent needing a fact would grep the project and read the best-matching files, so this indexes every file a reader could open, finds the passages that actually carry a memory's terms, and prices the reads. Matching is done over passages rather than whole files on purpose: a 40 KB document holds half the vocabulary of almost any memory, so whole-file overlap made the three largest docs in a repo "contain" everything, and those are also the most expensive to read. **A memory no file carries is never converted into tokens** — it is reported as a count, because without memgit those facts are not found more expensively, they are not found. Measured on a 4,075-memory store against a 1,958-file workspace: **40.6% of recalled memories exist in no file at all**, and for the rest reading costs **94x** what recall costs.
+
+### Changed
+- **The store is loaded once, not once per call.** `Repository.list()` re-read and re-parsed every object on every call, and it is the first thing search, recall, the digest and the core guide all do. Measured on a 4,075-memory store: 4,075 gzip opens (429 ms) plus 4,075 TOON parses (718 ms), paid in full on **every** tool call. Memories are content-addressed, so a SHA-keyed cache of parsed objects can never serve stale content — the same reasoning `scorer._TOKEN_CACHE` already used one layer up, applied to the layer that was still doing the work. The cache hands out copies, because callers mutate what they are given (`verify`, `doctor --relabel`, dedupe) and then re-save it; copying all 4,075 costs 8.2 ms against the 1,040 ms it replaces.
+- **A cold process reads one file instead of 4,075.** The in-process cache does nothing for a new process, and every AI session starts one. `.memgit/cache/corpus.json` is a pre-parsed pool written by whichever process paid the cold load. It is keyed by SHA and therefore needs no invalidation: a row for an edited memory belongs to a SHA nobody asks for any more. A missing, truncated or corrupt pool is not an error — every SHA it fails to supply is read from the object store exactly as before.
+- **Measured on the live store, five searches in one process.** Cold first search **2,035 ms to 401 ms**. Every later search **1,150 ms to 80 ms**. A session making eight memory calls goes from about **10.1 s to 1.0 s**, and stops making roughly 33,000 gzip file opens.
+- README: a "memgit Pro" section states exactly what is and is not gated, and what leaves the machine (the key and the organisation id; never memory content).
+
+
 ## [0.9.1] — 2026-08-14
 
 Findable where the users actually are.

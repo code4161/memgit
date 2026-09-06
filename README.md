@@ -264,6 +264,33 @@ Since 0.8.0 it also **starts itself**: a project's first guide is created automa
 
 ---
 
+## memgit Pro — one memory across every machine
+
+The local engine, the store, the MCP server and every command below are MIT and never
+gated. **Pro** is the hosted layer for people who work on more than one machine or with a
+team: end-to-end-encrypted sync where the server stores ciphertext only, unlocked by one
+licence key.
+
+```bash
+memgit pro activate <key>     # validate the key with Polar and store it (mode 0600)
+memgit pro status             # Free / Pro, last verification, expiry
+memgit pro deactivate         # remove the key from this machine
+```
+
+- Buy a key at [memgit.dev/#pricing](https://memgit.dev/#pricing) — $12/month or $99/year,
+  billed by Polar (merchant of record, taxes handled). The key arrives by email and in your
+  Polar purchases page.
+- The only bytes that leave your machine are the key and memgit's public organisation id,
+  sent to Polar's validation endpoint. **No memory content is ever sent.**
+- Headless hosts: set `MEMGIT_LICENSE_KEY=<key>` in the MCP server's environment; it is
+  validated with the same cache and never written to disk.
+- Fail-open: a key that verified in the last 14 days keeps working offline; a rejected key
+  drops to Free with a clear message. A lapsed plan never locks your data — reads, pulls and
+  exports keep working.
+- If this store is logged in to memgit cloud, `pro activate` also upgrades that account.
+
+---
+
 ## Backups that actually happen
 
 memgit's premise is that the AI is the operator — but backup used to require a human to remember `memgit git init --remote <url>` and keep pushing. On this project's own store that meant 1,734 memories on one disk with no copy anywhere, five weeks in. A maintenance task that needs a human command is a task that will not happen.
@@ -379,6 +406,10 @@ memgit setup continue
 memgit setup gemini-cli
 memgit setup hooks                # Claude Code hooks: resume at start, per-prompt recall,
                                   # capture guard + auto-sync at stop (--no-recall / --no-guard)
+
+# Pro (licence key)
+memgit pro activate <key>         # Polar-issued key; unlocks hosted E2E sync
+memgit pro status / deactivate
 
 # Server
 memgit serve                      # MCP stdio (Claude Code, Cursor, Windsurf, Cline)

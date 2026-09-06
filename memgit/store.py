@@ -10,6 +10,7 @@ SHA computation per spec:
 """
 
 from __future__ import annotations
+import copy
 import gzip
 import hashlib
 import json
@@ -25,6 +26,44 @@ from .toon import (
     serialize_mindstate,
     serialize_mnemonic,
 )
+
+
+#: Parsing is the dominant cost of loading the store (measured 2026-09-06 on a
+#: 4,075-memory store: 429 ms to gunzip every object and 718 ms to parse them,
+#: and `Repository.list()` paid all of it on EVERY call because nothing cached
+#: it). This is the same trick `scorer._TOKEN_CACHE` already uses one layer up:
+#: memories are content-addressed, so the SHA is a cache key that can never go
+#: stale — an edited memory is a different SHA and simply misses. Safe across
+#: stores for the same reason, so tests pointing at a temp dir cannot collide.
+#: Bounded so a long-running server (`memgit serve`) cannot grow it without limit.
+_OBJECT_CACHE: dict[str, Mnemonic] = {}
+_OBJECT_CACHE_MAX = 20000
+
+
+def _clone(m: Mnemonic) -> Mnemonic:
+    """A caller-safe copy of a cached mnemonic.
+
+    Callers DO mutate what they are handed (`verify`, `doctor --relabel` and the
+    dedupe path all set fields then re-save), so the cache must never hand out
+    the instance it keeps. Copying the three list fields as well makes an
+    in-place `tags.append` on a result harmless. Measured at 8.2 ms for all
+    4,075 memories, against the 1,040 ms it replaces.
+    """
+    c = copy.copy(m)
+    c.tags = list(m.tags)
+    c.supersedes = list(m.supersedes)
+    c.related = list(m.related)
+    return c
+
+
+def object_cache() -> dict[str, Mnemonic]:
+    """The live parsed-object cache, for bulk pre-filling (see Repository.list)."""
+    return _OBJECT_CACHE
+
+
+def clear_object_cache() -> None:
+    """Drop the parsed-object cache (tests, and after a bulk rewrite)."""
+    _OBJECT_CACHE.clear()
 
 
 class ObjectStore:
@@ -98,6 +137,9 @@ class ObjectStore:
         return sha
 
     def read_mnemonic(self, sha: str) -> Mnemonic:
+        hit = _OBJECT_CACHE.get(sha)
+        if hit is not None:
+            return _clone(hit)
         type_name, content = self._read(sha)
         assert type_name == 'mnem', f'Expected mnem, got {type_name}'
         objs = parse_toon(content)
@@ -106,6 +148,14 @@ class ObjectStore:
         m = objs[0]
         assert isinstance(m, Mnemonic), f'Expected Mnemonic, got {type(m)}'
         m.sha = sha
+        # Cache only fully-qualified SHAs: an abbreviation resolves to the same
+        # object but is not a stable key, and caching it would serve the wrong
+        # memory the moment a second object shares the prefix.
+        if len(sha) == 64:
+            if len(_OBJECT_CACHE) >= _OBJECT_CACHE_MAX:
+                _OBJECT_CACHE.clear()
+            _OBJECT_CACHE[sha] = m
+            return _clone(m)
         return m
 
     # ── MindState ─────────────────────────────────────────────────────────────

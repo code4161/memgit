@@ -1978,6 +1978,105 @@ def metrics(fmt_json, reset):
     console.print()
 
 
+@cli.command()
+@click.option('--json', 'fmt_json', is_flag=True, help='Machine-readable output')
+@click.option('--match', default=None, type=float,
+              help='Share of a memory\'s terms a file must carry to count as '
+                   'containing the fact (default 0.5)')
+@click.option('--reads', default=None, type=int,
+              help='How many files the counterfactual reader opens (default 3)')
+@click.option('--all-projects', is_flag=True,
+              help='Every project, not just the one you are standing in')
+@click.option('--root', type=click.Path(exists=True, file_okay=False),
+              help='Directory the counterfactual reader would search (default: cwd)')
+def savings(fmt_json, match, reads, all_projects, root):
+    """What memory cost, against what finding the same fact would have cost.
+
+    The counterfactual is stated, not implied: without memgit an agent needing
+    a fact would grep this project and read the best-matching files. That path
+    is mechanical, so it can be measured. Memories no file contains are counted
+    separately and NEVER priced — without memgit those facts are not found at
+    any number of tokens, and turning that into a savings figure would be the
+    fabrication `memgit metrics` was right to refuse.
+
+    The estimate is conservative on purpose: it counts the files only, not the
+    grep output, not the turns spent choosing what to open, and not the reads
+    that miss.
+    """
+    from . import savings as sv
+    from .project import detect_project
+    repo = _require_repo()
+    search_root = Path(root) if root else Path.cwd()
+    label = None if all_projects else detect_project(search_root)
+    r = sv.measure(repo, search_root, project=label,
+                   match=match if match is not None else sv.DEFAULT_MATCH,
+                   reads=reads if reads is not None else sv.DEFAULT_READS)
+
+    if fmt_json:
+        import json as _j
+        print(_j.dumps(r, indent=2))
+        return
+
+    from rich.rule import Rule
+    from rich import box
+
+    console.print()
+    console.print(Rule('[bold cyan]memgit savings[/bold cyan]  '
+                       '[dim]measured against a stated counterfactual[/dim]'))
+    console.print()
+    console.print(f'[dim]Project:[/dim] {r["project"] or "all"}   '
+                  f'[dim]Files a reader could open:[/dim] {r["files_indexed"]:,}   '
+                  f'[dim]Reads assumed:[/dim] {r["parameters"]["reads"]}   '
+                  f'[dim]Match:[/dim] {r["parameters"]["match"]:.0%}')
+    console.print()
+
+    if r['memories_considered'] == 0:
+        console.print('[dim]No recalled memories for this project yet — nothing '
+                      'to compare. The usage ledger fills as memories get '
+                      'surfaced.[/dim]')
+        console.print()
+        return
+
+    t = Table(box=box.SIMPLE, header_style='bold')
+    t.add_column('', min_width=34)
+    t.add_column('Tokens', justify='right')
+    t.add_row('With memgit (what was injected)', f'{r["memgit_tokens"]:,}')
+    t.add_row('Without memgit (files that would be read)',
+              f'{r["without_memgit_tokens"]:,}')
+    t.add_row('[bold]Saved[/bold]', f'[bold]{r["saved_tokens"]:,}[/bold]')
+    console.print(t)
+    if r['ratio']:
+        console.print(f'  Reading costs [bold]{r["ratio"]:.0f}x[/bold] what recall '
+                      f'costs, over {r["recalls_counted"]:,} recorded recalls of '
+                      f'{r["recoverable_from_files"]:,} memories.')
+    console.print()
+
+    if r['unrecoverable_from_files']:
+        console.print(
+            f'[bold yellow]{r["unrecoverable_from_files"]:,} of '
+            f'{r["memories_considered"]:,} recalled memories are in NO file in '
+            f'this project.[/bold yellow]')
+        console.print('  [dim]Not priced, deliberately. Without memgit these are '
+                      'not found more expensively, they are not found. That is '
+                      'the claim worth making, and it is a count, not a token '
+                      'figure.[/dim]')
+        console.print()
+
+    if r['top_savers']:
+        t2 = Table(box=box.SIMPLE, header_style='bold',
+                   title='Where the saving comes from', title_justify='left')
+        t2.add_column('Memory', min_width=30)
+        t2.add_column('Recalls', justify='right')
+        t2.add_column('Recall tok', justify='right')
+        t2.add_column('Read tok', justify='right')
+        for row in r['top_savers'][:8]:
+            t2.add_row(row['slug'][:48], f'{row["hits"]:,}',
+                       f'{row["memgit_tokens_per_recall"]:,}',
+                       f'{row["without_tokens_per_recall"]:,}')
+        console.print(t2)
+        console.print()
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def backup(ctx):
@@ -3352,6 +3451,126 @@ if __name__ == '__main__':
     # Required for the `python -m memgit.cli` fallback used by _memgit_cmd();
     # without it the module imports and exits silently.
     cli()
+
+
+# ── pro (licence-key entitlement via Polar; no extra, no telemetry) ──────────
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def pro(ctx):
+    """memgit Pro — activate, inspect or remove a licence key.
+
+    Pro unlocks the hosted sync layer (memgit cloud) and future paid features.
+    The free CLI, store and MCP server are MIT and never gated. The only bytes
+    that leave this machine are the key and memgit's public organisation id,
+    sent to Polar's validation endpoint; no memory content is ever sent.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(pro_status)
+
+
+@pro.command('activate')
+@click.argument('key')
+@click.option('--no-cloud', is_flag=True, help='Do not also attach the key to a logged-in memgit cloud account')
+def pro_activate(key, no_cloud):
+    """Store KEY and validate it with Polar. Buy one at memgit.dev/#pricing."""
+    from . import license as lic_mod
+    from datetime import datetime, timezone
+    key = key.strip()
+    if len(key) < 8:
+        console.print('[red]✗[/red] that does not look like a licence key')
+        sys.exit(2)
+    lic = lic_mod.License(key=key)
+    now = datetime.now(timezone.utc)
+    lic = lic_mod.refresh(lic, now=now, force=True)
+    if lic.status == 'granted':
+        lic_mod.write(lic)
+        console.print(f'[green]✓[/green] memgit Pro activated for key {lic.masked}'
+                      + (f' ({lic.customer_email})' if lic.customer_email else ''))
+        if lic.expires_at:
+            console.print(f'  [dim]expires {lic.expires_at}[/dim]')
+    elif lic.status in ('revoked', 'disabled', 'invalid'):
+        console.print(f'[red]✗[/red] key {lic.masked} was rejected: {lic.error or lic.status}')
+        console.print('  [dim]Keys are issued by Polar on purchase and shown in your purchases page.[/dim]')
+        sys.exit(1)
+    else:  # unknown — offline or provider down: keep the key, verify on next run
+        lic.status = 'none'
+        lic_mod.write(lic)
+        console.print(f'[yellow]![/yellow] could not reach the licence service ({lic.error}); '
+                      f'key {lic.masked} saved and will be verified on the next run')
+    if not no_cloud and lic.status == 'granted':
+        _pro_attach_cloud(key)
+
+
+def _pro_attach_cloud(key: str) -> None:
+    """Best-effort: if this store is logged in to memgit cloud, tell the API about
+    the key so the hosted side unlocks too. Silent when not logged in."""
+    try:
+        from .cloud.state import CloudState
+        from .repo import Repository
+        repo = Repository.find()
+        if repo is None:
+            return
+        cstate = CloudState(repo.path)
+        creds = cstate.creds
+        if not creds.get('access'):
+            return
+        from .cloud.client import ApiClient, DEFAULT_API_URL
+        import os as _os
+        api_url = _os.environ.get('MEMGIT_CLOUD_API') or creds.get('api_url') or DEFAULT_API_URL
+        api = ApiClient(api_url, cstate)
+        api._check(api._request('POST', '/v1/billing/polar/activate', json={'license_key': key}))
+        console.print('[green]✓[/green] memgit cloud account upgraded to Pro')
+    except Exception as e:  # never let the hosted side break local activation
+        console.print(f'[dim]cloud: not attached ({str(e)[:80]}) — run `memgit cloud login` then re-activate[/dim]')
+
+
+@pro.command('status')
+@click.option('--json', 'fmt_json', is_flag=True, help='JSON output')
+@click.option('--offline', is_flag=True, help='Answer from the cache only; never touch the network')
+def pro_status(fmt_json, offline):
+    """Show whether this machine is entitled to memgit Pro."""
+    from . import license as lic_mod
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    lic = lic_mod.read()
+    if lic.key and not offline and lic.needs_recheck(now):
+        lic = lic_mod.refresh(lic, now=now)
+        if lic.source == 'file':
+            try:
+                lic_mod.write(lic)
+            except OSError:
+                pass
+    ent = lic.is_entitled(now)
+    if fmt_json:
+        import json as _j
+        print(_j.dumps({'entitled': ent, 'key': lic.masked, 'status': lic.status,
+                        'validated_at': lic.validated_at, 'expires_at': lic.expires_at,
+                        'source': lic.source, 'error': lic.error}))
+        return
+    if not lic.key:
+        console.print('[bold]memgit Free[/bold] — no licence key. '
+                      f'Pro (hosted E2E sync across machines and teams): {lic_mod.PRO_URL}')
+        return
+    tier = '[green]memgit Pro[/green]' if ent else '[yellow]memgit Free (key not entitled)[/yellow]'
+    console.print(f'{tier}  key {lic.masked}  status {lic.status}'
+                  f'{"  via $MEMGIT_LICENSE_KEY" if lic.source != "file" else ""}')
+    if lic.validated_at:
+        console.print(f'  [dim]last verified {lic.validated_at}[/dim]')
+    if lic.expires_at:
+        console.print(f'  [dim]expires {lic.expires_at}[/dim]')
+    if lic.error:
+        console.print(f'  [yellow]{lic.error}[/yellow]')
+
+
+@pro.command('deactivate')
+def pro_deactivate():
+    """Remove the stored licence key from this machine."""
+    from . import license as lic_mod
+    if lic_mod.clear():
+        console.print('[green]✓[/green] licence key removed; memgit is back on the Free tier')
+    else:
+        console.print('[dim]no licence key was stored[/dim]')
 
 
 # ── cloud (E2E-encrypted team sync — optional extra) ──────────────────────────

@@ -374,3 +374,15 @@ decisive test has not run. Re-check at 24–48h: whether Glama/PulseMCP have ind
 crucially **whether their search surfaces us for "memory"**. That answers whether the
 name-only limitation is confined to the upstream feed or follows us downstream — and it is
 the difference between a listing that works and one that is merely live.
+
+
+---
+
+## 11. 2026-09-03 — the paid tier is built; the pipeline is in MEMGIT_GTM.md
+
+The 30-day gate from §3 read on 09-03: npm 778/30d (baseline 782, flat), PyPI 792/30d
+(baseline 693, +14%), GitHub still 0/0/0/0 — **not passed** (no unsolicited inbound). The
+owner's direction supersedes the gate as a *whether*: Pro is built and the cloud restart is
+planned on a v6 image, both at ≈₹0. The gate survives as the *measurement* (§6 of the GTM).
+Everything — decision, pricing evidence, stage-by-stage receipts, the owner's runbook, the
+kill rule — lives in [MEMGIT_GTM.md](MEMGIT_GTM.md). Do not re-derive it here.
