@@ -116,3 +116,34 @@ class TestMeasure:
                          'readme.md': 'nothing relevant\n'})
         c = sv.FileCorpus(tmp_path)
         assert all('node_modules' not in str(p) for p, _, _ in c.files)
+
+
+def test_tracked_files_survives_unreadable_paths(tmp_path, monkeypatch):
+    """An unreadable entry is one fewer place a fact could hide, not a crash.
+
+    `memgit savings` died with an unhandled PermissionError raised by `is_file()`
+    on /proc/1/map_files when run from / inside a container (2026-09-06). pathlib
+    swallows permission errors while SCANNING a directory, so an unreadable dir
+    alone does not reproduce it — the stat on an individual entry is what threw.
+    This forces exactly that.
+    """
+    from pathlib import Path
+    from memgit import savings
+
+    (tmp_path / "readable.md").write_text("a readable fact about penguins")
+    (tmp_path / "landmine.md").write_text("stat on this one explodes")
+
+    real_is_file = Path.is_file
+
+    def exploding_is_file(self, *a, **kw):
+        if self.name == "landmine.md":
+            raise PermissionError(1, "Operation not permitted", str(self))
+        return real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "is_file", exploding_is_file)
+
+    found = savings._tracked_files(tmp_path)
+
+    names = {p.name for p in found}
+    assert "readable.md" in names, "the walk must continue past the bad entry"
+    assert "landmine.md" not in names

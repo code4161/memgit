@@ -136,7 +136,12 @@ def cloud():
 @cloud.command()
 @click.option('--email', prompt=True)
 def signup(email):
-    """Create a memgit cloud account (30-day free trial)."""
+    """Create a memgit cloud account (free trial; the server sets the length).
+
+    The trial length is stamped by the server at signup and printed below, so this
+    help text does not hardcode it. It said "30-day" while the deployed server granted
+    14, which is a promise broken on day 15 for every reader of --help.
+    """
     _require_extra()
     from . import crypto
     from nacl import utils
@@ -345,13 +350,41 @@ def _report(res, direction):
     console.print(f'[green]{icons.get(res.action, "·")}[/green] {direction}: {res.action}{detail}{head}')
 
 
+def _guard_uncommitted(repo, thread: str, allow: bool) -> None:
+    """Refuse to transmit while staged memories are not in a checkpoint.
+
+    Sync ships CHECKPOINTS. `memgit add` stages a memory but does not create
+    one, so pushing straight after `add` uploads nothing of the user's — and
+    said "created (2 objects up)" while doing it, with the receiving machine
+    reporting a clean, empty, fsck-OK store (measured 2026-09-06). Nothing in
+    that sequence errored, which is why it reads as "sync is broken" rather
+    than "you have not committed". An error naming the fix is the whole point;
+    `--allow-uncommitted` is there for anyone who means it.
+    """
+    if allow:
+        return
+    pending = repo.uncommitted_slugs(thread)
+    if not pending:
+        return
+    shown = ', '.join(pending[:5]) + (f' and {len(pending) - 5} more' if len(pending) > 5 else '')
+    console.print(
+        f'[red]✗[/red] {len(pending)} memor{"y is" if len(pending) == 1 else "ies are"} '
+        f'not committed, and sync only ships committed memory: [bold]{shown}[/bold]')
+    console.print('  [dim]commit them first:  memgit commit -m "what changed"[/dim]')
+    console.print('  [dim]or push the committed state anyway:  --allow-uncommitted[/dim]')
+    sys.exit(1)
+
+
 @cloud.command()
 @click.option('--thread', default=None, help='thread to push (default: current)')
-def push(thread):
+@click.option('--allow-uncommitted', is_flag=True,
+              help='Push committed state even though staged memories would not be sent')
+def push(thread, allow_uncommitted):
     """Encrypt and upload local checkpoints, then advance the remote ref."""
     repo, cstate, api = _ctx()
     engine = _linked(repo, cstate, api)
     th = thread or repo.current_thread()
+    _guard_uncommitted(repo, th, allow_uncommitted)
     res = _run(lambda: engine.push(th), 'push')
     _report(res, f'push {th}')
 
@@ -369,11 +402,17 @@ def pull(thread):
 
 @cloud.command('sync')
 @click.option('--thread', default=None, help='thread to sync (default: current)')
-def cloud_sync(thread):
+@click.option('--allow-uncommitted', is_flag=True,
+              help='Sync committed state even though staged memories would not be sent')
+def cloud_sync(thread, allow_uncommitted):
     """Pull then push — the everyday command."""
     repo, cstate, api = _ctx()
     engine = _linked(repo, cstate, api)
     th = thread or repo.current_thread()
+    # Guarded before the pull as well as the push: sync is the command users
+    # reach for, and finding out after a merge that half of it was a no-op is
+    # worse than being told up front which memories are not committed yet.
+    _guard_uncommitted(repo, th, allow_uncommitted)
     pulled, pushed = _run(lambda: engine.sync(th), 'sync')
     _report(pulled, f'pull {th}')
     _report(pushed, f'push {th}')

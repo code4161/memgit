@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+Concurrent writes stop losing memories, and sync stops claiming it shipped one.
+
+### Fixed
+- **The store lock did not exclude, and memories were silently lost.** Measured: 3 of 120 concurrent runs dropped a memory, with a holder counter seeing **3 simultaneous lock holders and 5 exclusion violations**. The object was written and readable, but the slug was absent from both `TOON_INDEX` and HEAD's MindState, nothing raised, and `fsck` reported clean. Root cause: acquisition is `os.open(O_CREAT|O_EXCL)` followed by `os.write` of the owner token, and **between those two calls the lockfile exists with zero bytes**. The stale-lock breaker read that empty file, computed `pid = 0`, skipped its liveness check because `pid > 0` was false, and fell through to `not pid_alive` — deleting a live lock. Two writers then ran the read-modify-write of the index at once and one of them won. An unstamped lockfile is now treated as a lock being born, never an abandoned one, and only a provably dead owner or a genuinely aged-out lock is broken. After the fix: **0 of 250 runs lost a memory**, max concurrent holders 1, violations 0.
+- **Releasing the lock is now ownership-checked.** The old release unlinked unconditionally, so a holder whose lock had been broken and taken over would delete the new owner's lock on the way out, cascading one race into the next. Each acquisition now stamps a unique token and only removes the lockfile if it still holds that token.
+- **`memgit savings` crashed on any unreadable file.** `_tracked_files()` called `is_file()` outside the guard that already protected `stat()` and `read_text()`, so a single unreadable entry (a `/proc` symlink, a directory without permission) killed the whole report with a `PermissionError`. The walk now skips what it cannot stat and continues.
+
+### Added
+- **`memgit cloud push` and `sync` refuse to run while memories are staged but not committed.** Sync ships checkpoints, and `add` does not create one — so pushing straight after `add` uploaded nothing of the user's while reporting `created (2 objects up)`, and the receiving machine then showed an empty store that `fsck` called OK. Nothing errored, which is why it reads as "sync is broken" rather than "you have not committed". The error names the memories and the fix; `--allow-uncommitted` is there for anyone who means it. `Repository.uncommitted_slugs()` exposes the same check.
+
+
 ## [0.10.0] — 2026-09-06
 
 The server starts again, stops when you do, and stops re-reading the whole store.

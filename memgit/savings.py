@@ -121,8 +121,27 @@ def _tracked_files(root: Path) -> list[Path]:
     instead, which is what .gitignore was doing for us.
     """
     out = []
-    for path in root.rglob("*"):
-        if not path.is_file():
+    # `is_file()` stats the path, and a stat can fail for reasons that have
+    # nothing to do with us: /proc entries, dead symlinks, directories the user
+    # cannot traverse. An unreadable file is one fewer place a fact could have
+    # been found, never a reason to abort the whole report — `memgit savings`
+    # crashed with an unhandled PermissionError on /proc/1/map_files when run
+    # from / in a container (measured 2026-09-06).
+    try:
+        walk = root.rglob("*")
+    except OSError:
+        return out
+    while True:
+        try:
+            path = next(walk)
+        except StopIteration:
+            break
+        except OSError:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
             continue
         if any(part in _SKIP_DIRS for part in path.parts):
             continue

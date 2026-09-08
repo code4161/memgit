@@ -67,26 +67,82 @@ class Repository:
         return self.path / 'memgit.lock'
 
     def _try_break_stale_lock(self):
-        """Remove the lockfile if its owner is gone or it has aged out."""
+        """Remove the lockfile only when its owner is provably gone, or it aged out.
+
+        🔴 An EMPTY lockfile is a lock being BORN, never an abandoned one.
+        Acquisition is `os.open(O_CREAT|O_EXCL)` followed by `os.write` of the
+        owner token, and between those two calls the file exists with zero
+        bytes. The previous version read that empty file, computed `pid = 0`,
+        skipped the liveness check because `pid > 0` was false, and fell
+        through to `not pid_alive` — deleting a lock that was alive and about
+        to be used. The thread then acquired the same lock, and two writers ran
+        the read-modify-write of TOON_INDEX at once, so one memory was dropped
+        from both the index and HEAD's MindState with no error raised and a
+        clean fsck. Measured 2026-09-06: 3/120 runs lost a memory, and a
+        holder-counter saw max 3 concurrent holders with 5 exclusion
+        violations. Treating an unstamped lock as dead is the whole bug.
+        """
         lp = self._lock_path
         try:
             raw = lp.read_text().split()
-            pid = int(raw[0]) if raw else 0
             age = time.time() - lp.stat().st_mtime
         except (OSError, ValueError):
+            return  # vanished under us, or unreadable — not ours to break
+
+        aged_out = age > LOCK_STALE_SECONDS
+        if not raw:
+            # Unstamped: someone is between O_EXCL and the write. Only an
+            # aged-out lock this shape is genuinely abandoned (a crash in the
+            # window), and LOCK_STALE_SECONDS is long enough to be safe.
+            if aged_out:
+                self._unlink_lock_if(lp, expect=None)
             return
-        pid_alive = False
+
+        try:
+            pid = int(raw[0])
+        except ValueError:
+            if aged_out:
+                self._unlink_lock_if(lp, expect=None)
+            return
+
+        owner_dead = False
         if pid > 0:
             try:
                 os.kill(pid, 0)
-                pid_alive = True
+            except ProcessLookupError:
+                owner_dead = True
             except OSError:
-                pid_alive = False
-        if not pid_alive or age > LOCK_STALE_SECONDS:
-            try:
-                lp.unlink()
-            except OSError:
-                pass
+                owner_dead = False  # e.g. EPERM: alive, just not ours to signal
+        if owner_dead or aged_out:
+            self._unlink_lock_if(lp, expect=self._lock_token(raw))
+
+    @staticmethod
+    def _lock_token(raw: list[str]) -> str:
+        """The owner identity inside a lockfile: `pid uuid`, ignoring the timestamp.
+
+        The file is written as `pid uuid unixtime`. Comparing the WHOLE line
+        against a token is a bug that costs the lock its release: the token has
+        two fields, the file has three, so equality never held and every
+        acquisition leaked until it aged out.
+        """
+        return ' '.join(raw[:2])
+
+    @staticmethod
+    def _unlink_lock_if(lp: Path, expect: Optional[str]) -> None:
+        """Delete the lockfile only if it is still the one we judged.
+
+        Without this the breaker can delete a lock created by someone else in
+        the microseconds since it decided to break, and a releasing holder can
+        drop a lock that was taken over — either way turning one stale lock
+        into a live race.
+        """
+        try:
+            if expect is not None:
+                if Repository._lock_token(lp.read_text().split()) != expect:
+                    return
+            lp.unlink()
+        except OSError:
+            pass
 
     @contextmanager
     def _lock(self, timeout: float = None):
@@ -106,11 +162,17 @@ class Repository:
 
         timeout = LOCK_TIMEOUT_SECONDS if timeout is None else timeout
         deadline = time.monotonic() + timeout
+        # Token identifies THIS acquisition, not just this process: threads in
+        # one process share a pid, and release must never delete a lock that
+        # someone else has since taken.
+        token = f'{os.getpid()} {uuid.uuid4().hex}'
         while True:
             try:
                 fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, f'{os.getpid()} {time.time():.0f}\n'.encode())
-                os.close(fd)
+                try:
+                    os.write(fd, f'{token} {time.time():.0f}\n'.encode())
+                finally:
+                    os.close(fd)
                 break
             except FileExistsError:
                 self._try_break_stale_lock()
@@ -126,10 +188,10 @@ class Repository:
             yield
         finally:
             self._lock_depth = 0
-            try:
-                self._lock_path.unlink()
-            except OSError:
-                pass
+            # Only drop the lock if it is still OURS. If a breaker removed it
+            # and another writer acquired, unlinking here would release THEIR
+            # critical section and cascade the very race this lock prevents.
+            self._unlink_lock_if(self._lock_path, expect=token)
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 
@@ -405,6 +467,22 @@ class Repository:
         return result
 
     # ── Commit ────────────────────────────────────────────────────────────────
+
+    def uncommitted_slugs(self, thread: Optional[str] = None) -> list[str]:
+        """Slugs staged in the index but not in the thread HEAD's MindState.
+
+        `add` writes a mnemonic and stages it; only `commit` puts it in a
+        checkpoint. Everything that leaves this machine — cloud push, git sync,
+        backup — ships CHECKPOINTS, so a staged-but-uncommitted memory is
+        invisible to all of them. Callers that are about to transmit state
+        should say so rather than reporting a successful no-op: measured
+        2026-09-06, `cloud push` answered "created (2 objects up)" while
+        shipping none of the user's memory, and the receiving machine then
+        reported a clean, empty, fsck-OK store.
+        """
+        index = self.get_index()
+        committed = self._mindstate_map(self.head_sha(thread))
+        return sorted(s for s, sha in index.items() if committed.get(s) != sha)
 
     def _mindstate_map(self, ck_sha: Optional[str]) -> dict[str, str]:
         """slug → mnem_sha map for a checkpoint's MindState ({} for None)."""
