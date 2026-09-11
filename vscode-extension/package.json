@@ -2,7 +2,7 @@
   "name": "memgit",
   "displayName": "Memgit Tool",
   "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",
@@ -160,7 +160,7 @@
             },
             "rule": {
               "type": "string",
-              "description": "The memory content \u2014 a concise rule, fact, or insight"
+              "description": "The memory content — a concise rule, fact, or insight"
             },
             "priority": {
               "type": "number",
@@ -235,8 +235,8 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
-    "@vscode/vsce": "^2.26.0",
-    "esbuild": "^0.21.0",
-    "typescript": "^5.4.0"
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }
