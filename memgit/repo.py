@@ -18,6 +18,77 @@ from .models import (
 from .store import ObjectStore, object_cache as _object_cache
 
 
+# ── git argument safety ───────────────────────────────────────────────────────
+#
+# `git_push` / `git_pull` / `memgit git init --remote` hand their `remote` and
+# `branch` straight to `subprocess.run(['git', ...])`. No shell is involved, so
+# there is nothing to quote — but argv is not inert either:
+#
+#   * git reads any argument starting with '-' as an OPTION, not as a
+#     positional. That is how a remote name becomes `--upload-pack=<cmd>` or
+#     `--receive-pack=<cmd>`, both of which are commands git then runs.
+#   * a remote URL using the `ext::` transport IS a command line by definition —
+#     git-remote-ext executes it. `fd::` is the same class.
+#   * a newline in a branch name splits config and refspec parsing downstream.
+#
+# The values arrive from a CLI argument, a teammate's checked-in config or an
+# MCP caller, so they are checked before they become argv. These return an error
+# STRING rather than raising: every caller here already reports (ok, message).
+
+_GIT_REMOTE_DENY_SCHEMES = ('ext::', 'fd::')
+
+#: git check-ref-format, restricted to what a branch name may never contain.
+_BRANCH_FORBIDDEN_CHARS = set(' \t~^:?*[\\')
+
+
+def validate_git_remote(remote: str) -> Optional[str]:
+    """Error message if `remote` is unsafe to pass to git as a remote, else None.
+
+    Accepts both a remote NAME (`origin`) and a URL, because git's positional
+    accepts either. Rejects option-shaped values and the transports whose URL is
+    an executable command.
+    """
+    if not isinstance(remote, str) or not remote.strip():
+        return 'Refusing git remote: empty'
+    if remote.startswith('-'):
+        return (f'Refusing git remote {remote!r}: a leading "-" makes git read '
+                f'it as an option, not a remote')
+    if any(c in remote for c in ('\n', '\r', '\0')):
+        return f'Refusing git remote {remote!r}: contains a control character'
+    lowered = remote.lower()
+    for scheme in _GIT_REMOTE_DENY_SCHEMES:
+        if lowered.startswith(scheme):
+            return (f'Refusing git remote {remote!r}: the "{scheme}" transport '
+                    f'runs its URL as a command')
+    return None
+
+
+def validate_git_branch(branch: str) -> Optional[str]:
+    """Error message if `branch` is not a valid, safe branch name, else None.
+
+    A subset of `git check-ref-format --branch`, applied without shelling out to
+    git so the refusal happens before any process is spawned.
+    """
+    if not isinstance(branch, str) or not branch.strip():
+        return 'Refusing git branch: empty'
+    if branch.startswith('-'):
+        return (f'Refusing git branch {branch!r}: a leading "-" makes git read '
+                f'it as an option, not a branch')
+    if any(c in branch for c in _BRANCH_FORBIDDEN_CHARS):
+        return f'Refusing git branch {branch!r}: contains a character git forbids'
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in branch):
+        return f'Refusing git branch {branch!r}: contains a control character'
+    if '..' in branch or '@{' in branch:
+        return f'Refusing git branch {branch!r}: contains ".." or "@{{"'
+    if branch == '@' or branch.endswith('.lock') or branch.endswith('/'):
+        return f'Refusing git branch {branch!r}: not a valid ref name'
+    if branch.startswith('/') or branch.startswith('.') or branch.endswith('.'):
+        return f'Refusing git branch {branch!r}: not a valid ref name'
+    if '//' in branch:
+        return f'Refusing git branch {branch!r}: not a valid ref name'
+    return None
+
+
 def default_store_candidates() -> list[Path]:
     """Well-known store locations, in the same order `memgit init` auto-detects.
 
@@ -1463,6 +1534,10 @@ class Repository:
         except Exception:
             return None
 
+    def _check_git_args(self, remote: str, branch: str) -> Optional[str]:
+        """Error message if these git arguments are unsafe, else None."""
+        return validate_git_remote(remote) or validate_git_branch(branch)
+
     def git_push(self, remote: str = 'origin', branch: str = 'main',
                  message: str = None) -> tuple[bool, str]:
         """Write flat files then `git add + commit + push`.
@@ -1472,6 +1547,9 @@ class Repository:
         store_root = self.path.parent
         if not (store_root / '.git').exists():
             return False, 'Not a git repo — run `memgit git init` first'
+        bad = self._check_git_args(remote, branch)
+        if bad:
+            return False, bad
         self.write_flat()
         head_sha = self.head_sha() or 'none'
         commit_msg = message or f'memgit: checkpoint {head_sha[:8]}'
@@ -1500,6 +1578,9 @@ class Repository:
         store_root = self.path.parent
         if not (store_root / '.git').exists():
             return False, 'Not a git repo', 0
+        bad = self._check_git_args(remote, branch)
+        if bad:
+            return False, bad, 0
         try:
             subprocess.run(['git', 'pull', remote, branch], cwd=store_root,
                            check=True, capture_output=True)

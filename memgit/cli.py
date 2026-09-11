@@ -118,11 +118,18 @@ def init(directory):
 
     # Step-by-step flow: find existing memories automatically and offer the
     # import, instead of making the user discover the right path themselves.
+    # Narrow on purpose: an unreadable ~/.claude tree (OSError) or a memory file
+    # that will not parse (ValueError, which UnicodeDecodeError subclasses) is a
+    # reason to skip the offer, not to abort `init`. Anything else is a bug in
+    # the importer and must reach the user rather than being swallowed here.
     try:
         from .importer import from_claude_code
         found = from_claude_code()
-    except Exception:
+    except (OSError, ValueError) as exc:
         found = []
+        console.print(f'[dim]Could not scan ~/.claude/projects for existing '
+                      f'memories ({exc.__class__.__name__}: {exc}) — skipping '
+                      f'the import offer.[/dim]')
     if found:
         projects = {m.project for m in found if m.project}
         console.print(f'\nFound [bold]{len(found)}[/bold] existing Claude Code memories '
@@ -2686,6 +2693,13 @@ def git_init(remote):
 
     Then teammates run `memgit git pull` to get your memories.
     """
+    if remote:
+        from .repo import validate_git_remote
+        bad = validate_git_remote(remote)
+        if bad:
+            err.print(f'[red]{bad}[/red]')
+            raise SystemExit(1)
+
     repo = _require_repo()
     ok = repo.git_init()
     if not ok:

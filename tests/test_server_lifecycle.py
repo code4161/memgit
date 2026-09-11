@@ -10,6 +10,8 @@ is built on, so every fresh install crashed before serving one request.
 
 import time
 
+from pathlib import Path
+
 import pytest
 
 from memgit import mcp_server as ms
@@ -99,5 +101,13 @@ class TestSdkGuard:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "not compatible" in err
-        assert "mcp>=1.0.0,<2" in err, 'the message must name the fix, not just the fault'
+        # Read the range rather than restate it: a hardcoded copy here went
+        # stale the moment the floor was raised for the SDK advisories.
+        import tomllib
+        pyproject = Path(__file__).resolve().parent.parent / 'pyproject.toml'
+        declared = next(
+            d for d in tomllib.loads(pyproject.read_text())['project']['dependencies']
+            if d.replace(' ', '').startswith('mcp')
+        )
+        assert declared in err, 'the message must name the fix, not just the fault'
         assert "memgit-npm-venv" in err, 'the npm route breaks the same way and needs its own step'

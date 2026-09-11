@@ -26,14 +26,28 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "rich>=13.0",
-    # UPPER BOUND IS LOAD-BEARING, added 2026-09-06. The MCP SDK released 2.0.0
-    # on 2026-07-28 and removed `Server.list_tools` / `Server.call_tool`, so an
-    # unbounded `mcp>=1.0.0` resolved to 2.1.1 and every fresh install crashed
-    # on startup with AttributeError before serving a single request. Both
-    # install routes were affected: pip directly, and the npm wrapper, which
-    # runs `pip install --upgrade memgit` into a clean venv. Raise this bound
-    # only together with a server that works on the new API.
-    "mcp>=1.0.0,<2",
+    # BOTH BOUNDS ARE LOAD-BEARING.
+    #
+    # Upper (added 2026-09-06): the MCP SDK released 2.0.0 on 2026-07-28 and
+    # removed `Server.list_tools` / `Server.call_tool`, so an unbounded
+    # `mcp>=1.0.0` resolved to 2.1.1 and every fresh install crashed on startup
+    # with AttributeError before serving a single request. Both install routes
+    # were affected: pip directly, and the npm wrapper, which runs
+    # `pip install --upgrade memgit` into a clean venv. Raise this bound only
+    # together with a server that works on the new API.
+    #
+    # Lower (raised 2026-09-11 from >=1.0.0): 1.28.1 is the first 1.x release
+    # clear of every published advisory against the SDK. There are SIX, not the
+    # five a marketplace scan reported -- CVE-2025-53366 (<1.9.4),
+    # CVE-2025-53365 (<1.10.0), CVE-2025-66416 (<1.23.0), CVE-2026-52869
+    # (<=1.27.1), CVE-2026-52870 (>=1.23.0,<=1.27.1) and CVE-2026-59950
+    # (<1.28.1). Five are in the SDK's HTTP / SSE / WebSocket server transports
+    # and the sixth needs `server.experimental.enable_tasks()`; memgit imports
+    # only `mcp.server.Server` and `mcp.types`, speaks stdio, and calls none of
+    # them, so none were reachable in this package. The range is still what a
+    # resolver is allowed to pick and what a supply-chain scanner reads, so it
+    # states the floor. Re-check the advisory list before lowering this.
+    "mcp>=1.28.1,<2",
 ]
 
 [project.optional-dependencies]

@@ -441,6 +441,65 @@ memgit thread list / switch / create
 
 ---
 
+## What memgit reads from your environment
+
+memgit runs inside your agent, so the honest answer to "what does this process
+read from my environment?" should be checkable rather than a promise. The table
+below is generated from [`memgit/env.py`](memgit/env.py), and
+`tests/test_env_inventory.py` walks the package on every test run and fails if
+the code reads a name this list does not carry — or carries a name nothing
+reads. The list cannot drift away from the code.
+
+memgit reads these and nothing else. It writes none of them. None of them turn
+network access on: the cloud endpoints are overrides for a sync you have already
+opted into with `memgit cloud login`, and with no licence and no cloud login,
+memgit talks to nothing.
+
+| | Variable | What memgit does with it |
+|---|---|---|
+| Store and state | `MEMGIT_STORE` | Absolute path to the memory store. When set it is the ONLY candidate — an explicit store never silently falls back to another one. |
+|  | `MEMGIT_HOME` | Base directory for memgit's per-person state, currently the licence file (default ~/.memgit, mode 0600). |
+|  | `MEMGIT_PROJECT` | Forces the project label instead of detecting it from the working directory. |
+| Attribution | `MEMGIT_AUTHOR` | Explicit author stamped on checkpoints, for multi-agent jobs where several writers share one machine account. Wins over MEMGIT_CLIENT. |
+|  | `MEMGIT_CLIENT` | The host that launched this process (claude-code, cursor, ...), stamped into checkpoints so a memory says where it came from. |
+|  | `USER` | Fallback author name when neither MEMGIT_AUTHOR nor MEMGIT_CLIENT is set. |
+|  | `USERNAME` | Windows fallback for USER. |
+| Licensing (memgit Pro) | `MEMGIT_LICENSE_KEY` | memgit Pro licence key. Never printed in full — `memgit pro status` shows the last four characters. |
+|  | `MEMGIT_POLAR_API` | Overrides the licence-validation API base URL (testing). |
+|  | `MEMGIT_POLAR_ORG_ID` | Overrides the Polar organisation the licence is checked against. |
+| Cloud sync | `MEMGIT_CLOUD_API` | Overrides the memgit cloud API base URL. |
+|  | `MEMGIT_CLOUD_APP` | Overrides the memgit cloud web app base URL used in printed links. |
+|  | `MEMGIT_CLOUD_NO_CACHE` | Set to 1/true/yes to keep decrypted keys out of credentials.json; the passphrase is then re-prompted per command. |
+| Tuning | `MEMGIT_LOCK_TIMEOUT` | Seconds a writer waits for the store lock before giving up (default 10). |
+|  | `MEMGIT_IDLE_EVICT_SECONDS` | Idle seconds before the MCP server drops its in-memory caches while staying connected (default 900). |
+|  | `MEMGIT_HOUSEKEEPING_INTERVAL` | Seconds between the MCP server's housekeeping passes. |
+| Set by other software | `CLAUDE_PROJECT_DIR` | Set by Claude Code for hook processes; used as one input to project detection when the working directory is not the project root. |
+|  | `PYTEST_CURRENT_TEST` | Set by pytest. Its presence suppresses automatic backups, so a test run never writes into a real backup location. |
+
+### How the project label is decided
+
+Memories are project-scoped, so a wrong label files a memory where you will not
+find it again. The label comes from the first of these that yields one, and
+there is exactly one detection path shared by the MCP server, the CLI and the
+hooks — so a label derived at save time and one derived at recall time cannot
+disagree:
+
+1. `MEMGIT_PROJECT` — a forced label, taken verbatim
+2. the `cwd` a host reports in its hook payload (the real workspace, even when
+   the process working directory is elsewhere)
+3. `CLAUDE_PROJECT_DIR`
+4. the process working directory
+
+When none of them yields a label — running from `$HOME`, for instance — a write
+is **quarantined** under `_unknown` rather than filed globally, and
+`memgit doctor --relabel` moves it once you say where it belongs. Folding a
+free-text label onto an existing project (`log-report` → `Downloads-log-report`)
+happens only when the input is a trailing segment of exactly one known label and
+that label already holds memories; anything ambiguous is left alone, and every
+fold is reported rather than done silently.
+
+---
+
 ## TOON format — compact, readable, diffable
 
 Standard markdown memory file:

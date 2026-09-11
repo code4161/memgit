@@ -230,7 +230,7 @@ def _require_compatible_sdk() -> None:
     sys.stderr.write(
         f"memgit: the installed MCP SDK (mcp {found}) is not compatible with "
         f"this version of memgit — it no longer provides Server.list_tools.\n"
-        f"memgit needs mcp 1.x. Fix with:  pip install 'mcp>=1.0.0,<2'\n"
+        f"memgit needs mcp 1.x. Fix with:  pip install 'mcp>=1.28.1,<2'\n"
         f"(If you installed through npx memgit-mcp, delete "
         f"~/.memgit-npm-venv and run it again.)\n")
     raise SystemExit(1)
