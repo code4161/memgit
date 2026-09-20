@@ -377,7 +377,9 @@ memgit eval run --misses 10       # inspect the cases where nothing relevant sur
 memgit squash                     # compress old history (archives what it collapses)
 memgit gc                         # reclaim disk: sweep unreachable objects + stale session caches
 memgit stats                      # measured context costs + disk usage
-memgit doctor                     # hygiene report: quarantined/_unknown memories, stale caches, orphaned usage
+memgit doctor                     # hygiene + scope losses: split labels, quarantined, stale caches, orphaned usage
+memgit doctor --audit             # every split and stranded label, the save landing rate, throughput
+memgit doctor --audit --json      # the same report as JSON
 memgit doctor --relabel map.json  # bulk re-project memories ({"slug": "Label" | ""}); one checkpoint
 memgit lint                       # validate all memories (flags unknown provenance)
 memgit fsck                       # verify store integrity
@@ -489,6 +491,19 @@ disagree:
    the process working directory is elsewhere)
 3. `CLAUDE_PROJECT_DIR`
 4. the process working directory
+
+The label keeps `[A-Za-z0-9-]` and turns everything else into a dash, exactly as
+Claude Code names its `projects/` directories — including the `_` character,
+which becomes a dash. Labels written before v0.12.0 kept the `_`; they are
+folded onto the dash form when two labels are *compared*, so nothing written
+under the old form stops resolving, and nothing stored is rewritten.
+
+A project whose memories have **split across two labels** raises no error
+anywhere: the save succeeds, `fsck` stays clean, and the only symptom is an
+answer that is missing things. `memgit doctor` reports splits, stranded labels
+and the **save landing rate** by default; `memgit doctor --audit` adds every
+row. A repair heals toward the label whose **directory exists**, never toward
+the one holding more memories.
 
 When none of them yields a label — running from `$HOME`, for instance — a write
 is **quarantined** under `_unknown` rather than filed globally, and

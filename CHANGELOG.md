@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.0] — 2026-09-20
+
+A project whose memories have split across two labels raises no error anywhere, so `memgit doctor` now volunteers it. Measured on a 4,955-memory store: 2,215 memories did not surface in the workspace that owns them, and 2,193 of those were one relabel away.
+
+### Fixed
+- **The two project-label derivations disagreed, and a test asserted the disagreement was correct.** `project.py`'s docstring promises that a label derived from a path and a label derived from a Claude Code `projects/` directory name agree byte for byte, or scoping silently breaks. They did not: the munge regex kept the `_` character and Claude Code rewrites it as a dash, so `~/Freelance/logistics_crm` derived as `Freelance-logistics_crm` from the path and `Freelance-logistics-crm` from the directory name, and neither half of that project could see the other. Zero of the ~2,000 directories in a real `~/.claude/projects/` contain a `_`. `test_underscore_preserved` asserted the bug, and the parity test passed because it paired a path holding a `_` with a hand-written directory name that kept it — both sides built from the same wrong assumption, so the one test written to catch this could not see it.
+- **Existing labels are not stranded by that fix.** Comparison folds the two forms and storage is untouched: `normalize_label` runs inside `same_project_family` and `project_affinity`, never on the way to disk. Labels written before the fix, and memories arriving from an older writer or another machine, keep resolving. The `_unknown` quarantine label carries a `_` by design and is returned untouched, so it can never fold onto a real label.
+
+### Added
+- **`memgit doctor` reports scope losses by default, and `--audit` adds the detail.** A split label passes `fsck`, raises nothing and generates no bug report, so the only way anyone learns of one is a report that volunteers it. Four mechanisms are detected: the directory moved, the label was misspelled by hand, a short label was used where the workspace label was meant, and the two derivations disagreed. `--json` emits the whole report.
+- **Which label survives a repair is decided by the directory, not by the memory count.** On a real store, healing toward the bigger pile would have kept a dead label holding 1,819 memories over the live one holding 18, and a misspelling holding 75 over the spelling holding 18 — stranding both projects a second time.
+- **Successor guessing is narrow on purpose.** Matching a stranded label to a live one by its last path segment paired two different clients who happened to share the segment `crm`, which would have filed one client's memories under another. A candidate must be a trailing segment run of the stranded label and already hold memories, and ties break on directory depth.
+- **`memgit.tiers` and `memgit.org`: the company and component tiers, foundation only.** A client folder is not one project — one measured folder held six separate git repos and one workspace held thirteen sub-projects, and every save landed on whatever depth the session started from. `project_root` resolves a working directory to the project that owns it plus the component inside it, so a directly opened sub-repo stops looking like a project of its own. `org.resolve` derives a project's company from evidence inside the project and never from a folder name alone: a folder holding six unrelated clients resolves to `container`, not to a company. **Nothing calls either module yet** — no scoping, ranking or save behaviour changes in this release.
+
+### Internal
+- **`toon.py` carries unknown fields through a parse and serialize round trip.** A field written by a newer memgit was previously dropped by an older one, silently and with a success report, which is how a machine running two versions against one store loses data with nothing in any log.
+- `project_label_from_path` takes an optional `home`. Deriving labels against another root needed a second copy of the munging, and a second copy is exactly how the two derivations drifted apart.
+
 ## [0.11.0] — 2026-09-11
 
 Concurrent writes stop losing memories, sync stops claiming it shipped one, and the dependency range stops permitting an MCP SDK with a published advisory.
