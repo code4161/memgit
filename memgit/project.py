@@ -37,11 +37,19 @@ def munge(text: str) -> str:
     return _MUNGE_RE.sub('-', text)
 
 
-def project_label_from_path(path: Path) -> Optional[str]:
-    """Derive a project label from a filesystem path (home prefix stripped)."""
+def project_label_from_path(path: Path,
+                            home: Optional[Path] = None) -> Optional[str]:
+    """Derive a project label from a filesystem path (home prefix stripped).
+
+    `home` defaults to the real home directory, which is what every caller in
+    the product wants. It is a parameter so a caller working against a
+    different root derives labels through THIS function rather than writing a
+    second copy of the munging. A second copy is how the label derivations
+    drifted apart in the first place.
+    """
     try:
         resolved = path.expanduser().resolve()
-        home = Path.home().resolve()
+        home = (home or Path.home()).expanduser().resolve()
     except OSError:
         return None
     if resolved == home:

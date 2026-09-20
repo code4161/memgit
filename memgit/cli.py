@@ -2486,7 +2486,13 @@ def gc(dry_run, squash_keep, reflog_keep, fmt_json):
 @click.option('--prune-session', 'prune_sessions', multiple=True, metavar='ID',
               help='Delete the named session-cache files across all cache '
                    'kinds (e.g. leftover test artifacts; repeatable)')
-def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions):
+@click.option('--audit', 'full_audit', is_flag=True,
+              help='Full scope audit: every split and stranded label, the '
+                   'save landing rate, and throughput')
+@click.option('--json', 'fmt_json', is_flag=True,
+              help='Emit the audit as JSON')
+def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
+           full_audit, fmt_json):
     """Diagnose and repair store hygiene: provenance, usage ledger, caches.
 
     With no options, prints a report: quarantined (`_unknown`) and
@@ -2612,6 +2618,85 @@ def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions):
                       f'`memgit doctor --prune-usage <slug>`')
     else:
         console.print('usage ledger clean — every entry maps to a live memory')
+
+    # Scope losses run in the DEFAULT report, not behind the flag. A split
+    # raises no error and passes fsck, so the only way anyone learns of one is
+    # a report that volunteers it. `--audit` adds the detail, never the finding.
+    from .audit import audit as _audit
+    rep = _audit(repo)
+    _render_scope_losses(rep, full_audit)
+    if fmt_json:
+        console.print_json(data=rep)
+
+
+def _render_scope_losses(rep: dict, full: bool) -> None:
+    """Print the split, strand and landing-rate findings from an audit."""
+    splits, stranded = rep['splits'], rep['stranded']
+    rate = rep['save_rate']
+    homed = rep['home_labels']
+    orphaned = [r for r in stranded if not r['successor']]
+
+    if not (splits or stranded or homed):
+        console.print('[green]no split or stranded labels[/green] — every '
+                      'memory is reachable from its own workspace')
+        return
+
+    lost = rate['misfiled']
+    console.print(f'\n[yellow]{lost} of {rep["total"]} memories do not surface '
+                  f'in the workspace that owns them[/yellow] '
+                  f'(landing rate {rate["landing_rate"]:.1%}) — '
+                  f'{rate["recoverable"]} of them are one relabel away')
+
+    if splits:
+        console.print(f'[bold]{len(splits)} split label(s)[/bold] — one project, '
+                      'two separate stores:')
+        for s in splits if full else splits[:5]:
+            live = '' if s['keep_is_live'] else '  [dim](neither is live)[/dim]'
+            console.print(f'  [dim]{s["kind"]:12s}[/dim] {s["drop"]} '
+                          f'({s["drop_count"]}) → {s["keep"]} '
+                          f'({s["keep_count"]}){live}')
+        if not full and len(splits) > 5:
+            console.print(f'  [dim]… and {len(splits) - 5} more, see --audit[/dim]')
+
+    # A moved directory trips both detectors, so the same label would print
+    # twice under two headings. The split row already names where it heals to.
+    already = {s['drop'] for s in splits} | {s['keep'] for s in splits}
+    healable = [r for r in stranded if r['successor'] and r['label'] not in already]
+    if healable:
+        console.print(f'[bold]{len(healable)} stranded label(s)[/bold] with a '
+                      'successor — the directory moved:')
+        for r in healable if full else healable[:5]:
+            console.print(f'  {r["label"]} ({r["count"]}) → {r["successor"]}')
+
+    if homed:
+        for r in homed:
+            console.print(f'[yellow]{r["count"]} memories labelled '
+                          f'{r["label"]}[/yellow] — that is the home directory, '
+                          'not a project; they belong in global scope')
+
+    if orphaned:
+        console.print(f'{len(orphaned)} label(s) with no directory and no '
+                      'successor, holding '
+                      f'{sum(r["count"] for r in orphaned)} memories')
+        if full:
+            for r in orphaned:
+                console.print(f'  [dim]{r["label"]} ({r["count"]})[/dim]')
+
+    d = rep['dangling']
+    n_d = len(d['supersedes']) + len(d['related'])
+    if n_d:
+        console.print(f'{n_d} dangling link(s) '
+                      f'({len(d["supersedes"])} supersedes, '
+                      f'{len(d["related"])} related) point at slugs that do '
+                      'not exist')
+
+    if full:
+        console.print(f'\n[bold]throughput[/bold]  {rate["total"]} total · '
+                      f'{rate["last_30d"]} in 30 days · '
+                      f'{rate["per_day_30d"]}/day')
+        top = list(rate['by_project_30d'].items())[:8]
+        for label, n in top:
+            console.print(f'  {n:6d}  {label}')
 
 
 # ── merge ─────────────────────────────────────────────────────────────────────
