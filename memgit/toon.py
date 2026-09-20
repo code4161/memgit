@@ -202,6 +202,11 @@ def _parse_mnemonic(
     supersedes: list[str] = []
     related: list[str] = []
     unverified = False
+    # Fields written by a NEWER memgit than the one parsing. Kept verbatim and
+    # written back out, so an older reader cannot silently strip a field it
+    # does not know about. Without this, one rewrite by an older binary
+    # destroys the new data and reports success.
+    extra: dict = {}
 
     for raw in lines:
         line = raw.strip()
@@ -260,6 +265,8 @@ def _parse_mnemonic(
                 inc = v
             elif k == 'COST':
                 cost = v
+            elif k and k.isupper():
+                extra[k] = v
 
     return Mnemonic(
         type_code=type_code,
@@ -282,6 +289,7 @@ def _parse_mnemonic(
         related=related,
         source=source,
         unverified=unverified,
+        extra=extra,
     )
 
 
@@ -329,6 +337,9 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             fields.append(('~SUP', ','.join(sorted(m.supersedes))))
         if m.unverified:
             fields.append(('~UNV', '1'))
+        for k in sorted(m.extra or {}):
+            fields.append((k, m.extra[k]))
+        fields.sort(key=lambda kv: kv[0])
 
         for k, v in fields:
             if k == 'TAGS':
@@ -361,6 +372,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             lines.append(f'INC:{_esc(m.inc)}')
         if m.cost:
             lines.append(f'COST:{_esc(m.cost)}')
+        for k in sorted(m.extra or {}):
+            lines.append(f'{k}:{_esc(m.extra[k])}')
         if m.supersedes:
             lines.append(f'~SUP:{",".join(m.supersedes)}')
         if m.related:

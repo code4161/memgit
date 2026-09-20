@@ -36,6 +36,12 @@ class Mnemonic:
     #: until promoted (`memgit verify <slug>` or re-saved verified). Defaults
     #: False so every existing memory is trusted exactly as before.
     unverified: bool = False
+    #: TOON fields written by a NEWER memgit than the one holding this object.
+    #: Parsed and written back verbatim so an older reader cannot silently
+    #: strip a field it does not understand. One rewrite by an older binary
+    #: would otherwise destroy the new data and report success, which is how a
+    #: mixed-version machine loses data with nothing in any log.
+    extra: dict = field(default_factory=dict)
     sha: Optional[str] = None  # computed by store
 
 
