@@ -9,7 +9,9 @@ import pytest
 
 from memgit.models import Mnemonic
 from memgit.project import (
+    UNKNOWN_PROJECT,
     munge,
+    normalize_label,
     project_affinity,
     project_label_from_munged,
     project_label_from_path,
@@ -36,10 +38,17 @@ def repo(tmp_path):
 # ── munging parity with Claude Code project dirs ─────────────────────────────
 
 class TestMunging:
-    def test_underscore_preserved(self):
-        # Claude Code keeps '_': dir '-Users-hari-Freelance-BITS-bits_back'
+    def test_underscore_becomes_a_dash(self):
+        """Claude Code does not keep the _ character, and this test said it did.
+
+        Measured 2026-09-20: zero of the ~2,000 directories in
+        ~/.claude/projects/ contain a _ character, and ~/Freelance/logistics_crm
+        appears there as -Users-hari-Freelance-logistics-crm. The old assertion
+        kept the _ and broke the byte-for-byte agreement the module promises,
+        splitting one project across two labels on a live store.
+        """
         assert munge("/Users/hari/Freelance/BITS/bits_back") == \
-            "-Users-hari-Freelance-BITS-bits_back"
+            "-Users-hari-Freelance-BITS-bits-back"
 
     def test_dot_and_space_become_dashes_without_collapsing(self):
         # '/.x' → '--x' (one dash per char, runs NOT collapsed)
@@ -47,12 +56,20 @@ class TestMunging:
         assert munge("/Users/hari/Personal business") == "-Users-hari-Personal-business"
 
     def test_label_from_path_matches_label_from_munged(self, monkeypatch):
+        """The parity invariant, against directory names Claude Code can produce.
+
+        This test used to pair a path holding a _ character with a hand-written
+        dir name that kept it, so both sides were built from the same wrong
+        assumption and the disagreement was invisible. A parity test is only
+        worth its name when one side is the real thing.
+        """
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/hari")))
         cases = {
             "/Users/hari/Freelance/BITS": "-Users-hari-Freelance-BITS",
-            "/Users/hari/Freelance/BITS/bits_back": "-Users-hari-Freelance-BITS-bits_back",
+            "/Users/hari/Freelance/BITS/bits_back": "-Users-hari-Freelance-BITS-bits-back",
             "/Users/hari/Personal business": "-Users-hari-Personal-business",
-            "/Users/hari/FittyMe/fittyme_web": "-Users-hari-FittyMe-fittyme_web",
+            "/Users/hari/FittyMe/fittyme_web": "-Users-hari-FittyMe-fittyme-web",
+            "/Users/hari/Freelance/logistics_crm": "-Users-hari-Freelance-logistics-crm",
         }
         for path, munged_dir in cases.items():
             # resolve() needs a real fs on some platforms; fake it too
@@ -62,6 +79,29 @@ class TestMunging:
                 Path, "expanduser", lambda self: self, raising=False)
             assert project_label_from_path(Path(path)) == \
                 project_label_from_munged(munged_dir), path
+
+    def test_a_label_written_before_the_fix_is_still_reachable(self):
+        """The property that lets the munge fix land without a relabel.
+
+        268 memories on this store carry the _ form. Detection now returns the
+        dash form, so comparing the raw strings would take all of them dark
+        between the fix and the repair that follows it. Comparison folds the
+        two forms; storage is untouched.
+        """
+        assert same_project_family(
+            "Freelance-logistics_crm", "Freelance-logistics-crm")
+        assert project_affinity(
+            "Freelance-funeral_service", "Freelance-funeral-service") == 2
+        # A component below an old-form label still matches its project.
+        assert same_project_family(
+            "Freelance-funeral_service", "Freelance-funeral-service-poster")
+        assert normalize_label(None) is None
+
+    def test_quarantine_never_folds_onto_a_real_label(self):
+        """_unknown carries a _ by design and must not normalize into a label."""
+        assert normalize_label(UNKNOWN_PROJECT) == UNKNOWN_PROJECT
+        assert not same_project_family(UNKNOWN_PROJECT, "-unknown")
+        assert not same_project_family(UNKNOWN_PROJECT, UNKNOWN_PROJECT)
 
     def test_home_itself_is_none(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/hari")))

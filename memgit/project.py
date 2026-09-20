@@ -19,9 +19,15 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional
 
-# Claude Code keeps [A-Za-z0-9_-] and turns everything else into '-',
-# one dash per character (runs are NOT collapsed: '/.x' → '--x').
-_MUNGE_RE = re.compile(r'[^A-Za-z0-9_-]')
+# Claude Code keeps [A-Za-z0-9-] and turns everything else into a dash, one
+# dash per character (runs are NOT collapsed, so '/.x' becomes '--x').
+# The _ character is NOT kept. This regex used to keep it, which broke the
+# byte-for-byte agreement the module docstring promises: ~/Freelance/logistics_crm
+# derived as Freelance-logistics_crm from the path and Freelance-logistics-crm
+# from the projects dir name, and a live store held 24 memories under one and 1
+# under the other. Measured 2026-09-20: zero of the ~2,000 directories in
+# ~/.claude/projects/ contain a _ character.
+_MUNGE_RE = re.compile(r'[^A-Za-z0-9-]')
 
 #: Quarantine label for a save whose project could not be determined.
 #: A memory with project=None is EXPLICITLY GLOBAL (applies everywhere) —
@@ -35,6 +41,28 @@ UNKNOWN_PROJECT = '_unknown'
 def munge(text: str) -> str:
     """Munge a path string exactly the way Claude Code munges project dirs."""
     return _MUNGE_RE.sub('-', text)
+
+
+def normalize_label(label: Optional[str]) -> Optional[str]:
+    """The form two labels are COMPARED in, never the form they are stored in.
+
+    Labels written before the munge fix keep the _ character, and a memory
+    synced from a machine still running an older memgit keeps it too. Comparing
+    the raw strings would strand every one of them the moment detection starts
+    returning the dash form: on the store this was measured against, 268
+    memories across three projects would have gone dark between the fix and the
+    relabel that follows it.
+
+    So comparison folds the two forms together and storage is left alone. That
+    ordering is what makes the fix safe to land on its own, and it keeps
+    working afterwards for anything arriving from an older writer.
+
+    The quarantine label is returned untouched. It carries a _ by design and
+    must never fold onto a real label.
+    """
+    if not label or label == UNKNOWN_PROJECT:
+        return label
+    return label.replace('_', '-')
 
 
 def project_label_from_path(path: Path,
@@ -92,6 +120,7 @@ def same_project_family(a: Optional[str], b: Optional[str]) -> bool:
         return False
     if a == UNKNOWN_PROJECT or b == UNKNOWN_PROJECT:
         return False
+    a, b = normalize_label(a), normalize_label(b)
     if a == b:
         return True
     return a.startswith(b + '-') or b.startswith(a + '-')
@@ -111,7 +140,7 @@ def project_affinity(memory_project: Optional[str],
         return 0
     if UNKNOWN_PROJECT in (memory_project, current):
         return 0
-    if memory_project == current:
+    if normalize_label(memory_project) == normalize_label(current):
         return 2
     if same_project_family(memory_project, current):
         return 1

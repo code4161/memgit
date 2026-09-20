@@ -134,11 +134,15 @@ def label_splits(counts: dict, live: Optional[dict] = None) -> list:
     out: list = []
     for i, a in enumerate(labels):
         for b in labels[i + 1:]:
-            if same_project_family(a, b):
-                continue
+            # The munge check runs BEFORE the family skip. Comparison folds the
+            # two forms together, so a munge pair is family and no longer costs
+            # recall, but it is still two labels in the store and a repair
+            # should still collapse it. It reports with costs_recall False.
             kind = None
             if _dash_form(a) == _dash_form(b) and a != b:
                 kind = 'munge'
+            elif same_project_family(a, b):
+                continue
             elif a.lower() == b.lower():
                 kind = 'case'
             elif a.endswith('-' + b) or b.endswith('-' + a):
@@ -160,6 +164,7 @@ def label_splits(counts: dict, live: Optional[dict] = None) -> list:
                 'keep_count': counts.get(keep, 0),
                 'drop_count': counts.get(drop, 0),
                 'keep_is_live': keep in live,
+                'costs_recall': kind != 'munge',
             })
     out.sort(key=lambda r: -r['drop_count'])
     return out
@@ -311,7 +316,7 @@ def audit(repo, home: Optional[Path] = None, depth: int = SCAN_DEPTH) -> dict:
     # different fixes and different severity. Collapsing them into one
     # percentage hides that almost all of it is one relabel away, and reads as
     # if half the store were unrecoverable.
-    split_drops = {r['drop'] for r in splits}
+    split_drops = {r['drop'] for r in splits if r['costs_recall']}
     stranded_set = {r['label'] for r in stranded}
     home_set = {r['label'] for r in homed}
     by_cause = {'quarantined': set(quarantined), 'split': set(), 'stranded': set()}

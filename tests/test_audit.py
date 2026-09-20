@@ -75,14 +75,20 @@ def test_short_label_split_heals_toward_the_workspace_label():
 def test_munge_split_heals_toward_the_dash_form_even_when_it_is_smaller():
     """Only the dash form is reachable from both label derivations.
 
-    project_label_from_path keeps the _ character and Claude Code does not, so
-    that form of the label can never come from a projects directory name.
-    The filesystem does not get a vote here.
+    Claude Code does not keep the _ character, so that form of the label can
+    never come from a projects directory name. The filesystem does not get a
+    vote here, and neither does the memory count.
+
+    It reports costs_recall False because normalize_label already folds the two
+    forms together at comparison time, so nothing is invisible. The pair is a
+    tidiness repair, not a scope loss, and counting it as one would overstate
+    the damage.
     """
     counts = {'Freelance-logistics_crm': 24, 'Freelance-logistics-crm': 1}
     (split,) = A.label_splits(counts, {})
     assert split['kind'] == 'munge'
     assert split['keep'] == 'Freelance-logistics-crm'
+    assert split['costs_recall'] is False
 
 
 def test_family_pairs_are_not_splits():
