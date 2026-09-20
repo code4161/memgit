@@ -32,8 +32,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .project import (UNKNOWN_PROJECT, munge, project_label_from_path,
-                      same_project_family)
+from .project import (UNKNOWN_PROJECT, munge, normalize_label,
+                      project_label_from_path, same_project_family)
 
 #: How deep to walk below home looking for workspace directories. Three levels
 #: reaches a component inside a project inside a client folder, which is the
@@ -78,6 +78,19 @@ def live_labels(home: Optional[Path] = None, depth: int = SCAN_DEPTH) -> dict:
         if label and label not in out:
             out[label] = str(d)
     return out
+
+
+def _is_live(label: str, live: dict) -> bool:
+    """True when a directory exists for this label, comparing NORMALIZED forms.
+
+    A label written before the munge fix carries the _ character and detection
+    now returns the dash form, so a raw string comparison calls every one of
+    them stranded. Measured on the live store the moment the fixed binary was
+    installed: the strand count jumped by 266 memories across three projects
+    that resolve perfectly well, because comparison folds the two forms
+    everywhere except here.
+    """
+    return normalize_label(label) in {normalize_label(k) for k in live}
 
 
 def _edit_distance(a: str, b: str, cap: int = 2) -> int:
@@ -163,7 +176,7 @@ def label_splits(counts: dict, live: Optional[dict] = None) -> list:
                 'drop': drop,
                 'keep_count': counts.get(keep, 0),
                 'drop_count': counts.get(drop, 0),
-                'keep_is_live': keep in live,
+                'keep_is_live': _is_live(keep, live),
                 'costs_recall': kind != 'munge',
             })
     out.sort(key=lambda r: -r['drop_count'])
@@ -179,7 +192,7 @@ def _survivor(a: str, b: str, kind: str, counts: dict, live: dict) -> str:
     """
     if kind == 'munge':
         return a if '_' not in a else b
-    a_live, b_live = a in live, b in live
+    a_live, b_live = _is_live(a, live), _is_live(b, live)
     if a_live != b_live:
         return a if a_live else b
     return a if counts.get(a, 0) >= counts.get(b, 0) else b
@@ -194,6 +207,7 @@ def _trailing_containment(a: str, b: str) -> bool:
     Freelance-logistics-crm and Freelance-FittyMe-fittyme-crm share the
     segment crm and are two different clients.
     """
+    a, b = normalize_label(a) or '', normalize_label(b) or ''
     return a == b or a.endswith('-' + b) or b.endswith('-' + a)
 
 
@@ -220,7 +234,7 @@ def stranded_labels(counts: dict, live: dict) -> list:
     """
     out: list = []
     for label, n in counts.items():
-        if not label or label == UNKNOWN_PROJECT or label in live:
+        if not label or label == UNKNOWN_PROJECT or _is_live(label, live):
             continue
         cands = [l for l in live
                  if l != label and counts.get(l, 0) > 0

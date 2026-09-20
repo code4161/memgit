@@ -2,7 +2,7 @@
 
 ## [0.12.0] — 2026-09-20
 
-A project whose memories have split across two labels raises no error anywhere, so `memgit doctor` now volunteers it. Measured on a 4,955-memory store: 2,215 memories did not surface in the workspace that owns them, and 2,193 of those were one relabel away.
+A project whose memories have split across two labels raises no error anywhere, so `memgit doctor` now volunteers it. Measured 2026-09-20 on a 4,957-memory store: 2,190 memories did not surface in the workspace that owns them, and 2,168 of those were one relabel away.
 
 ### Fixed
 - **The two project-label derivations disagreed, and a test asserted the disagreement was correct.** `project.py`'s docstring promises that a label derived from a path and a label derived from a Claude Code `projects/` directory name agree byte for byte, or scoping silently breaks. They did not: the munge regex kept the `_` character and Claude Code rewrites it as a dash, so `~/Freelance/logistics_crm` derived as `Freelance-logistics_crm` from the path and `Freelance-logistics-crm` from the directory name, and neither half of that project could see the other. Zero of the ~2,000 directories in a real `~/.claude/projects/` contain a `_`. `test_underscore_preserved` asserted the bug, and the parity test passed because it paired a path holding a `_` with a hand-written directory name that kept it — both sides built from the same wrong assumption, so the one test written to catch this could not see it.

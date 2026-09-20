@@ -213,3 +213,19 @@ def test_audit_writes_nothing_to_the_store(tmp_path):
     A.audit(repo, home=tmp_path)
     assert not hasattr(repo, 'add')
     assert [m.slug for m in repo.list()] == ['a']
+
+
+def test_an_old_form_label_is_not_reported_as_stranded():
+    """The regression the fixed binary produced the moment it was installed.
+
+    Detection returns the dash form after the munge fix, so comparing raw
+    strings called every label written before it stranded. On the live store
+    that added 266 memories across three projects that resolve perfectly well.
+    Comparison folds the two forms everywhere, and this was the one place it
+    did not.
+    """
+    counts = {'Freelance-funeral_service': 232}
+    live = {'Freelance-funeral-service':
+            _p('Users', 'hari', 'Freelance', 'funeral_service')}
+    assert A.stranded_labels(counts, live) == []
+    assert A._is_live('Freelance-funeral_service', live) is True
