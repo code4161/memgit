@@ -6,10 +6,12 @@ bitten twice in a way a person could not see: Chocolatey packed 0.9.0 under a
 the VS Code Marketplace drifted two versions behind. Both were found by querying
 a channel after the fact. This test moves the check before the tag.
 
-Chocolatey is deliberately absent: `choco-publish.yml` now stamps the nuspec and
-the install script FROM THE TAG and fails if the packed artifact is not the
-version it meant to build, so the file in the repo is not a source of truth and
-asserting on it would fight the mechanism that fixed it.
+Chocolatey is checked too. `choco-publish.yml` stamps the nuspec and the
+install script FROM THE TAG and fails if the packed artifact is not the version
+it meant to build, so CI cannot ship the wrong number. But with that as the only
+guard, the committed files sat at 0.10.0 through three releases, and anyone
+packing locally or reading the repo saw the wrong version. Both guards agree on
+the same number, so neither fights the other.
 
 The Homebrew formula is absent for the opposite reason: it pins the sha256 of
 the PyPI sdist, so it can only be bumped AFTER PyPI publishes, and it lives in
@@ -81,3 +83,13 @@ def test_changelog_has_an_entry_for_this_version():
         f'was bumped without writing the entry, or the entry is still under '
         f'[Unreleased]'
     )
+
+
+def test_chocolatey_stamps_match():
+    """The nuspec <version> and the pinned pip install in the install script."""
+    nuspec = ROOT / 'chocolatey/memgit.nuspec'
+    script = ROOT / 'chocolatey/tools/chocolateyInstall.ps1'
+    if not nuspec.exists():
+        pytest.skip('no chocolatey package in this checkout')
+    assert re.findall(r'<version>([^<]+)</version>', nuspec.read_text()) == [__version__]
+    assert re.findall(r'memgit==([0-9.]+)', script.read_text()) == [__version__]
