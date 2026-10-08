@@ -16,6 +16,7 @@ from mcp.types import (
 )
 
 from . import __version__
+from .markup import clean_for_context, has_markup
 from .models import Mnemonic
 from .repo import Repository
 from .scorer import score as bm25_score
@@ -80,6 +81,11 @@ _TYPE_DESCRIPTIONS = (
 
 _TYPE_ENUM = ["fb", "us", "pj", "rf", "cn", "lx", "co", "tr"]
 
+#: A rule longer than this draws a warning on save. The schema asks for about
+#: 200; on 2026-10-07 the median clean rule was 306 characters and the median
+#: rule damaged by swallowed parameters was 992.
+_RULE_WARN_CHARS = 400
+
 
 def _default_store() -> Path:
     from .repo import default_store_candidates
@@ -122,16 +128,20 @@ def _load_repo(store_path: Path | None) -> Repository | None:
 
 def _mnem_to_dict(m: Mnemonic, score: float | None = None,
                   include_body: bool = False) -> dict[str, Any]:
+    # Tool-call markup inside a stored field is the residue of a save whose
+    # parameters were swallowed. Serving it back teaches the next save the
+    # same mistake, so reads carry the field's own text and a flag instead.
+    damaged = any(has_markup(getattr(m, f)) for f in ("rule", "why", "when", "body"))
     d: dict[str, Any] = {
         "slug": m.slug,
         "type": m.type_code,
         "priority": m.priority,
-        "rule": m.rule,
+        "rule": clean_for_context(m.rule),
     }
     if m.why:
-        d["why"] = m.why
+        d["why"] = clean_for_context(m.why)
     if m.when:
-        d["when"] = m.when
+        d["when"] = clean_for_context(m.when)
     if m.tags:
         d["tags"] = m.tags
     if m.desc:
@@ -142,8 +152,11 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None,
         # surface candidate status on read so the agent knows not to trust it
         # blindly (and can promote it with verify_memory)
         d["unverified"] = True
+    if damaged:
+        d["damaged"] = ("fields were stored with swallowed parameters; shown "
+                        "cut at the damage. Repair: memgit doctor --repair-markup")
     if include_body and m.body:
-        d["body"] = m.body
+        d["body"] = clean_for_context(m.body)
     elif m.body:
         d["has_body"] = True  # full detail available via get_memory
     if score is not None:
@@ -730,7 +743,8 @@ def run_server(store_path: Path | None = None) -> None:
 
             lines = [f"# {len(mnemonics)} memories"]
             for m in mnemonics:
-                rule_preview = m.rule[:80] + ".." if len(m.rule) > 80 else m.rule
+                shown = clean_for_context(m.rule)
+                rule_preview = shown[:80] + ".." if len(shown) > 80 else shown
                 proj = f" {m.project}" if m.project else ""
                 sup = (f" ⊘superseded-by:{resolve_head(m.slug, all_mems)}"
                        if m.slug in hidden else "")
@@ -739,16 +753,37 @@ def run_server(store_path: Path | None = None) -> None:
             return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "save_memory":
-            slug = arguments.get("slug", "").strip()
-            rule = arguments.get("rule", "").strip()
+            # Refuse before anything else when a value carries tool-call
+            # markup: the parameters after it were swallowed into that value
+            # and would be stored as defaults. Raising marks the result
+            # isError, so the model retries the call in the same turn.
+            from .markup import (SAVE_PARAMS, check_save_arguments,
+                                 refusal_message)
+            problems = check_save_arguments(arguments)
+            if problems:
+                raise ValueError(refusal_message(problems))
+
+            slug = (arguments.get("slug") or "").strip()
+            rule = (arguments.get("rule") or "").strip()
 
             if not slug or not rule:
-                return [TextContent(type="text", text="Error: slug and rule are required.")]
+                missing = [k for k, v in (("slug", slug), ("rule", rule)) if not v]
+                return [TextContent(type="text", text=(
+                    "Error: slug and rule are required (missing: "
+                    + ", ".join(missing) + "; arguments received: "
+                    + ", ".join(sorted(arguments)) + ")."))]
 
             # Accept "type" as an alias: read surfaces return the field as
             # "type", so an operator mirroring get_memory output naturally
             # passes it back under that name.
-            type_code = arguments.get("type_code") or arguments.get("type") or "fb"
+            defaulted: list[str] = []
+            type_code = arguments.get("type_code") or arguments.get("type")
+            if not type_code:
+                type_code = "fb"
+                defaulted.append("type_code")
+            if "priority" not in arguments:
+                defaulted.append("priority")
+            unknown_args = sorted(k for k in arguments if k not in SAVE_PARAMS)
             why = arguments.get("why")
             when = arguments.get("when")
             body = arguments.get("body")
@@ -891,6 +926,40 @@ def run_server(store_path: Path | None = None) -> None:
                         "high-authority injection until you confirm it with "
                         "verify_memory."
                     )
+            # Echo what was stored, so a call that lost fields on the way in
+            # is visible in the answer rather than only in the store.
+            out["stored"] = {
+                "rule_chars": len(rule),
+                "why_chars": len(why or ""),
+                "when_chars": len(when or ""),
+                "body_chars": len(body or ""),
+                "tags": len(m.tags),
+            }
+            empty = [f for f, v in (("why", why), ("when", when),
+                                    ("body", body)) if not (v or "").strip()]
+            if not m.tags:
+                empty.append("tags")
+            if empty:
+                out["stored"]["empty"] = empty
+            if defaulted:
+                out["defaulted"] = defaulted
+            if "type_code" in defaulted:
+                warnings.append(
+                    "no type_code arrived, so this was stored as 'fb' "
+                    "(feedback). If it is a project fact, lesson, tracker or "
+                    "anything else, save it again with type_code set.")
+            if unknown_args:
+                warnings.append(
+                    "ignored unknown argument(s): " + ", ".join(unknown_args)
+                    + ". save_memory takes type_code (or type), not "
+                    "memory_type; anything else here may mean two tool calls "
+                    "were merged into one.")
+            if len(rule) > _RULE_WARN_CHARS:
+                warnings.append(
+                    f"rule is {len(rule)} characters; it is shown in every "
+                    "search result and digest, so keep it to one sentence "
+                    f"(about 200, at most {_RULE_WARN_CHARS}) and move the "
+                    "detail to body.")
             if warnings:
                 out["warnings"] = warnings
             return [TextContent(type="text", text=json.dumps(out, indent=2))]

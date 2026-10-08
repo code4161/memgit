@@ -15,6 +15,7 @@ from typing import Optional
 from .models import (
     Checkpoint, DiffSummary, MindState, MindStateEntry, Mnemonic, Thread,
 )
+from .markup import clean_for_context
 from .store import ObjectStore, object_cache as _object_cache
 
 
@@ -1138,8 +1139,8 @@ class Repository:
         else:
             tracker_pool = [m for m in mnemonics if not m.project]
         trackers = [
-            {'slug': m.slug, 'rule': m.rule, 'timestamp': m.timestamp,
-             'tags': m.tags}
+            {'slug': m.slug, 'rule': clean_for_context(m.rule),
+             'timestamp': m.timestamp, 'tags': m.tags}
             for m in sorted((m for m in tracker_pool
                              if m.type_code == 'tr' and not m.unverified),
                             key=lambda m: m.timestamp, reverse=True)
@@ -1150,7 +1151,8 @@ class Repository:
         # to confirm) but tags them, so they're never mistaken for trusted state.
         recent_mems = [
             {'slug': m.slug, 'type': m.type_code, 'priority': m.priority,
-             'timestamp': m.timestamp, 'rule': m.rule, 'project': m.project,
+             'timestamp': m.timestamp, 'rule': clean_for_context(m.rule),
+             'project': m.project,
              'unverified': m.unverified}
             for m in pool if m.slug not in tracker_slugs
         ][:recent]
@@ -1163,7 +1165,7 @@ class Repository:
                 if not m.project or project_affinity(m.project, project) >= 1
             ]
         critical = [
-            {'slug': m.slug, 'rule': m.rule}
+            {'slug': m.slug, 'rule': clean_for_context(m.rule)}
             for m in sorted(critical_pool, key=lambda m: m.slug)
             if m.priority == 3 and not m.unverified   # candidates never "always apply"
         ]
@@ -1181,7 +1183,8 @@ class Repository:
         else:
             core_pool = [m for m in mnemonics if not m.project]
         core = [
-            {'slug': m.slug, 'rule': m.rule, 'body': m.body}
+            {'slug': m.slug, 'rule': clean_for_context(m.rule),
+             'body': clean_for_context(m.body) or None}
             for m in sorted(core_pool, key=lambda m: m.slug)
             if m.type_code == 'co' and not m.unverified   # never inject unverified guidance
         ]

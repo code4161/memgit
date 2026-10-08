@@ -193,6 +193,15 @@ def add(slug, rule, type_code, why, when, tags, priority, body, project,
     tag_list = [t.strip() for t in tags.split(',')] if tags else []
     if body == '-':
         body = sys.stdin.read().strip() or None
+    from .markup import check_save_arguments
+    problems = check_save_arguments(
+        {'slug': slug, 'rule': rule, 'why': why, 'when': when, 'body': body,
+         'tags': tag_list})
+    if problems:
+        err.print('[red]refused: ' + '; '.join(problems) + '. Nothing was '
+                  'saved. Wrap markup in backticks to quote it on '
+                  'purpose.[/red]')
+        sys.exit(1)
     # Same scoping semantics as MCP save_memory: absent → this workspace,
     # --global (or explicit empty string) → deliberately global. Detection
     # failing must never silently produce a global memory — quarantine it
@@ -2491,8 +2500,15 @@ def gc(dry_run, squash_keep, reflog_keep, fmt_json):
                    'save landing rate, and throughput')
 @click.option('--json', 'fmt_json', is_flag=True,
               help='Emit the audit as JSON')
+@click.option('--repair-markup', is_flag=True,
+              help='Split memories whose fields carry tool-call markup back '
+                   'into their fields. Dry run unless --yes is given')
+@click.option('--project', 'repair_project', default=None, metavar='LABEL',
+              help='With --repair-markup: only this project')
+@click.option('--yes', 'confirm', is_flag=True,
+              help='With --repair-markup: write the repair as one checkpoint')
 def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
-           full_audit, fmt_json):
+           full_audit, fmt_json, repair_markup, repair_project, confirm):
     """Diagnose and repair store hygiene: provenance, usage ledger, caches.
 
     With no options, prints a report: quarantined (`_unknown`) and
@@ -2575,6 +2591,10 @@ def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
         console.print(f'[green]doctor[/green]  removed {deleted} stale + '
                       f'{pruned} named session-cache file(s)')
 
+    if repair_markup:
+        acted = True
+        _repair_markup(repo, repair_project, confirm)
+
     if acted:
         return
 
@@ -2622,11 +2642,68 @@ def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
     # Scope losses run in the DEFAULT report, not behind the flag. A split
     # raises no error and passes fsck, so the only way anyone learns of one is
     # a report that volunteers it. `--audit` adds the detail, never the finding.
+    from .markup import TEXT_FIELDS, has_markup
+    damaged = [m for m in mnemonics
+               if any(has_markup(getattr(m, f)) for f in TEXT_FIELDS)]
+    if damaged:
+        by_proj = Counter(m.project or '(global)' for m in damaged)
+        console.print(f'[yellow]{len(damaged)} memories carry tool-call markup '
+                      f'in their fields[/yellow] — parameters swallowed on '
+                      f'save; repair with `memgit doctor --repair-markup` '
+                      f'(dry run), then add --yes')
+        console.print('  by project: ' + ' · '.join(
+            f'{p} ({n})' for p, n in by_proj.most_common(8)))
+    else:
+        console.print('no memory carries tool-call markup in its fields')
+
     from .audit import audit as _audit
     rep = _audit(repo)
     _render_scope_losses(rep, full_audit)
     if fmt_json:
         console.print_json(data=rep)
+
+
+def _repair_markup(repo, project, confirm) -> None:
+    """Split damaged memories back into their fields; dry run without confirm.
+
+    Covers superseded memories too: a swallowed supersedes inside one of them
+    is still a broken chain. One checkpoint for the whole repair, so a single
+    `memgit rollback` undoes it while no other save has landed since.
+    """
+    from .markup import repair
+    mems = repo.list()
+    if project is not None:
+        mems = [m for m in mems if (m.project or '') == project]
+    reps = [r for r in (repair(m) for m in mems) if r is not None]
+    fixed = [r for r in reps if r.fixed is not None]
+    failed = [r for r in reps if r.fixed is None]
+    retyped = [r for r in fixed if r.type_changed]
+    conflicts = [r for r in fixed if r.conflicts]
+    mode = 'repaired' if confirm else 'would repair'
+    console.print(f'[bold]doctor --repair-markup[/bold]  {mode} {len(fixed)} '
+                  f'memor{"ies" if len(fixed) != 1 else "y"}'
+                  + (f' in {project}' if project is not None else ''))
+    for r in retyped:
+        console.print(f'  type  {r.slug}: {r.type_changed[0]} → '
+                      f'{r.type_changed[1]}')
+    for r in conflicts:
+        console.print(f'  [yellow]merged[/yellow] {r.slug}: '
+                      + ', '.join(f'{a}→{b}' for a, b in r.conflicts)
+                      + ' held different text; both kept')
+    for r in failed:
+        console.print(f'  [red]skipped[/red] {r.slug}: '
+                      + '; '.join(r.unparsed))
+    if not fixed:
+        return
+    if not confirm:
+        console.print('[dim]dry run — nothing written; add --yes to apply[/dim]')
+        return
+    for r in fixed:
+        repo.add(r.fixed)
+    sha = repo.commit(
+        message=f'doctor: repair {len(fixed)} memories with tool-call markup '
+                'in their fields', trigger='explicit')
+    console.print(f'[green]doctor[/green]  checkpoint {(sha or "")[:8]}')
 
 
 def _render_scope_losses(rep: dict, full: bool) -> None:

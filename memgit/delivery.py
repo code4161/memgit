@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from .markup import clean_for_context
+
 MARKER_START = "<!-- MEMGIT:BEGIN -->"
 MARKER_END = "<!-- MEMGIT:END -->"
 
@@ -420,7 +422,7 @@ def compute_auto_section(repo, project, now, curated: str = "") -> str:
     ]
     total = 0
     for _score, m in candidates:
-        rule = (m.rule or "").strip()
+        rule = clean_for_context(m.rule).strip()
         line = f"- [{m.slug}] {rule[:120]}"
         if len(lines) - 2 >= _AUTO_MAX_ITEMS or total + len(line) > _AUTO_MAX_CHARS:
             break

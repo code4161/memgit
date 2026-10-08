@@ -238,6 +238,11 @@ class MemgitHandler(BaseHTTPRequestHandler):
         if m:
             slug = m.group(1)
             body = self._read_body()
+            from .markup import check_save_arguments, refusal_message
+            problems = check_save_arguments(body)
+            if problems:
+                self._error(refusal_message(problems))
+                return
             rule = body.get("rule", "").strip()
             if not rule:
                 self._error("rule is required")

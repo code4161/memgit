@@ -26,6 +26,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .markup import clean_for_context
+
 # Prompts shorter than this can't carry enough signal to search on.
 MIN_PROMPT_CHARS = 20
 # BM25 score below which a match is noise, not recall (empirically, real
@@ -132,7 +134,8 @@ def prompt_recall() -> int:
     lines = ['<memgit-recall># Saved memories relevant to this request:']
     for r in results:
         m = r.mnemonic
-        rule = m.rule if len(m.rule) <= 220 else m.rule[:219] + '…'
+        rule = clean_for_context(m.rule)
+        rule = rule if len(rule) <= 220 else rule[:219] + '…'
         detail = ' (full detail: get_memory)' if m.body else ''
         # Unverified = candidate content (imported/injection-flagged): surface it
         # but never as trusted — the agent must not follow it as instruction.
@@ -231,7 +234,7 @@ def _depth_hint(results, mnemonics, seen: set[str],
     # the same state always advertises the same example.
     example = max(best_pool,
                   key=lambda m: (m.priority, len(m.rule or ''), m.slug))
-    teaser = (example.rule or '').strip().replace('\n', ' ')
+    teaser = clean_for_context(example.rule).strip().replace('\n', ' ')
     if len(teaser) > 110:
         teaser = teaser[:109] + '…'
     line = (f'- +{best_n} more saved on \'{best_tag}\', including '

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.13.0] — 2026-10-08
+
+A save whose parameters were swallowed into another field is now refused instead of stored. Measured 2026-10-07 on one machine: 748 of 3,025 `save_memory` calls (24.7%) arrived with tool-call markup inside a field, and memgit stored every one with defaults for the fields that never arrived and answered `status: ok`.
+
+### Fixed
+- **`save_memory` refuses values that carry tool-call markup.** The model closes a value with a tag named after the field (`</rule>`), the host parser does not accept that as the end of the value, and every parameter until the next accepted closer lands inside it. The refusal names the damaged field and the parameters found inside it, and nothing is written, so the model retries in the same turn. It checks every string argument and every list item. Markup counts when it is a parameter, invoke or function_calls tag (with or without a namespace prefix), or a closing tag named after a save_memory field with nothing but whitespace or more markup after it, so a `</body>` in a note about HTML is prose. Anything inside backticks is exempt, so a memory can quote the defect. Replayed over the 2,935 save calls still on disk, it refuses 725; the only two loose matches it lets through quote the markup deliberately. `memgit add` and the HTTP `PUT /memories/<slug>` apply the same check.
+- **Damaged text is no longer injected back into context.** Exposure to a damaged memory raised one model's damage rate from 40.5% to 59.6%, because the markup reads as content. The resume digest (status board, recent memories, critical rules, core guide), the recall hook, the core-guide auto block and every MCP read now show each field cut at its first markup token. Read results carry a `damaged` flag naming the repair command. The store is never rewritten by a read.
+
+### Added
+- **The save response says what was stored.** A `stored` block gives the length of rule, why, when and body, the tag count, and which of them arrived empty. `defaulted` names values that came from a default.
+- **Warnings for the silent cases**: a `type_code` that never arrived (stored as `fb`), an unknown argument such as `memory_type` (which memgit never accepted, and which came with damage in 36 of 40 calls), and a rule over 400 characters (the damaged median was 992, the clean median 306).
+- **`memgit doctor` counts damaged memories by project in its default report, and `memgit doctor --repair-markup` repairs them.** It splits each damaged field back into its fields, merges swallowed tags, related and supersedes into the real lists, restores a swallowed `type_code` or priority, drops the start of a following tool call, keeps the original timestamp, and covers superseded memories too. It is a dry run until `--yes`, writes one checkpoint, and `--project` limits it to one label.
+
+### Not done
+- Renaming the save parameters to names that do not read as element names (`fact`, `reason` and so on) needs a save-side eval against a live model first. It is not in this release.
+
 ## [0.12.0] — 2026-09-20
 
 A project whose memories have split across two labels raises no error anywhere, so `memgit doctor` now volunteers it. Measured 2026-09-20 on a 4,957-memory store: 2,190 memories did not surface in the workspace that owns them, and 2,168 of those were one relabel away.

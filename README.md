@@ -250,6 +250,8 @@ Once registered via MCP, every AI tool gets 6 tools:
 
 The tool descriptions teach the AI **judgment** — "does this request depend on state you don't have in context?" — rather than keyword triggers. Measured cost of the whole tool surface: ~1,150 tokens once per session; a `resume_session` reply is ~335.
 
+**A save that arrives damaged is refused, not stored** (v0.13.0). A model sometimes closes a value with a tag named after the field (`</rule>`), and the host then delivers the next parameters inside that value: `why`, `when`, `tags` and `type_code` never arrive, and the memory is stored with defaults. On one machine that was 748 of 3,025 saves. `save_memory` now refuses any value carrying tool-call markup, names the field and the parameters it swallowed, and the model retries in the same turn. Markup quoted on purpose inside backticks is allowed. Every successful save echoes the length of each field it stored, which fields arrived empty, and which values came from a default. Damaged memories already in a store are never served back into context: the digest, the recall hook and read results show each field cut at the damage. `memgit doctor` counts them, and `memgit doctor --repair-markup` splits them back into their fields.
+
 ---
 
 ## Core operating guide (v0.5.0)
@@ -381,6 +383,8 @@ memgit doctor                     # hygiene + scope losses: split labels, quaran
 memgit doctor --audit             # every split and stranded label, the save landing rate, throughput
 memgit doctor --audit --json      # the same report as JSON
 memgit doctor --relabel map.json  # bulk re-project memories ({"slug": "Label" | ""}); one checkpoint
+memgit doctor --repair-markup     # dry run: memories whose fields swallowed other parameters on save
+memgit doctor --repair-markup --yes [--project LABEL]   # split them back into their fields; one checkpoint
 memgit lint                       # validate all memories (flags unknown provenance)
 memgit fsck                       # verify store integrity
 
