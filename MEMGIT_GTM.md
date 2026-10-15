@@ -27,13 +27,13 @@ number is a guess it says so.
 | 2 | **Install** | users | — | ~1,570/month across npm+PyPI | same |
 | 3 | **Activation** — first `resume`, hooks, token savings | product | — | shipped (0.4–0.9) | no telemetry by design; `memgit stats` is the user's own receipt |
 | 4 | **Upgrade trigger** — second machine / team / "sync this" | product + README | — | README "memgit Pro" section + `memgit pro` commands (this commit) | user runs `memgit pro status` → sees Free + the pricing URL |
-| 5 | **Checkout** — Polar checkout link | OWNER | ₹0 to create | ⛔ **not created** — needs a Polar org (KYC) | a live `buy.polar.sh/...` URL that returns a checkout page |
+| 5 | **Checkout** — Polar checkout link | OWNER | ₹0 to create | ✅ live since 2026-09-06 (section 4) | a live `buy.polar.sh/...` URL that returns a checkout page |
 | 6 | **Key delivery** — Polar emails the key + purchases page | Polar | — | automatic once the product carries a licence-key benefit | a test purchase's email |
 | 7 | **Local entitlement** — `memgit pro activate <key>` | product | — | ✅ built + tested (`memgit/license.py`, 28 tests) | `memgit pro status --json` → `entitled: true` |
-| 8 | **Hosted entitlement** — key unlocks api.memgit.dev | product | — | ✅ built + tested (`cloud/api/app/routes_polar.py`, 11 tests); ⛔ **not deployed** — the running image is v5 and predates this route | `POST /v1/billing/polar/activate` → `{"plan":"pro"}` on the live host |
+| 8 | **Hosted entitlement** — key unlocks api.memgit.dev | product | — | ✅ built + tested (`cloud/api/app/routes_polar.py`, 11 tests); deployed as build v6-2026-09-06 | `POST /v1/billing/polar/activate` → `{"plan":"pro"}` on the live host |
 | 9 | **Money lands** — Polar → Stripe Connect Express → Indian bank | Polar | 5% + 50¢ (+1.5% intl card, +0.5% subscription), $2/month active payout + 0.25%+25¢/payout | ⛔ needs the org (stage 5) | a payout line in the Polar dashboard, then the bank statement |
 | 10 | **Retention** — subscription renews, key stays granted; cancel → `subscription.revoked` webhook ends hosted entitlement; local grace 14 days | product + Polar | — | ✅ webhook route built + tested | Polar dashboard MRR / churn |
-| 11 | **Measurement** — the only receipts that matter | owner reads Polar | — | — | checkouts started · paid · MRR · refunds (Polar dashboard); installs (npm/PyPI) |
+| 11 | **Measurement** — the only receipts that matter | memgit-funnel, daily (cloud/funnel) | — | live 2026-10-15 | /admin/health system memgit-funnel: installs, signups, trials, paid, Polar orders and checkouts |
 
 Stages 1–4, 7, 8, 10 are done in code. **The pipeline is blocked at stage 5, which only the
 owner can do (identity KYC).** Everything after it is mechanical.
@@ -181,16 +181,22 @@ nothing else is trusted.
 | 0 paid, <100 views, installs flat | distribution — the pricing page is not being reached | in-product hint (owner consent), then one more PULL round |
 | 0 paid at 60 days | record it as the demand verdict this project has never had; stop spending hours; keep the code (it costs nothing) | — |
 
-## 7. What is not done, honestly
+## 7. What is not done, honestly (re-measured 2026-10-15)
 
-- No Polar org, product, link, or webhook exists. Stage 5 is the owner's.
-- The cloud is still off and the running image cannot serve the new route. A v6 build is
-  required; `api/requirements.txt` still pins nothing (`>=` only) — pin before building.
-- INR pricing is not offered (Polar presents USD; local-currency display is Polar's feature,
-  unverified for INR). The old ₹399 card is gone from the site.
-- The cloud web app's `/billing` page still shows the Cashfree flow. It works but is now the
-  wrong door; the CLI path is the primary one. Replacing that page is a follow-up.
-- `MEMGIT_POLAR_ORG_ID` default is empty until the org exists; `pro activate` reports
-  "not configured in this build" rather than failing silently.
-- No telemetry was added. Conversion is measured at Polar, installs at the registries; the
-  gap between them is the number this document exists to obtain.
+- Polar org, both products, the checkout link and the webhook all exist and were verified
+  against the Polar API on 2026-09-06 (section 4). The checkout CTA is live on memgit.dev.
+- The 14-day free trial is the primary CTA on the homepage hero and the Pro card since
+  2026-10-15, pointing at app.memgit.dev/signup; the licence-key checkout is the secondary line.
+- The funnel is measured daily by memgit-funnel on crypto-earn-vm (cloud/funnel/funnel_report.py):
+  installs, signups, active and expired trials, paying accounts, Polar orders and checkouts,
+  reported to /admin/health (system memgit-funnel) and one Telegram line. The same job sends the
+  trial expiry notices (four days before the end, and once it has ended) through Brevo.
+- Read on 2026-10-15 from Cosmos: 5 real accounts, every trial expired, 0 subscriptions, 0 paid.
+  Installs over 30 days: npm 827, PyPI 743 (registry APIs, 2026-10-15).
+- The Polar organisation token in Secret Manager (pb-polar-token, written 2026-09-06) is refused
+  by the API (401 invalid_token, 2026-10-15). Until a new token is minted in the Polar dashboard
+  and stored, the Polar row reports UNKNOWN (token refused), never zero.
+- A real test purchase and refund has not been made.
+- INR pricing is not offered (Polar presents USD).
+- No telemetry was added. Conversion is measured at Polar and in Cosmos, installs at the
+  registries; the gap between them is the number this document exists to obtain.
