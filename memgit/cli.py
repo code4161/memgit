@@ -657,6 +657,13 @@ def resume(checkpoints, recent, plain, fmt_json, project):
     import json as _j
     from .project import detect_project
     repo = _require_repo()
+    # Session start is when another machine's memories should arrive. The pull
+    # runs detached, so the digest is never held up by the network.
+    try:
+        from .cloud.auto import trigger as autosync
+        autosync(repo.path)
+    except Exception:
+        pass
     if project is None:
         project = detect_project()
     ctx = repo.resume_context(checkpoints=checkpoints, recent=recent, project=project)

@@ -615,7 +615,12 @@ class Repository:
         staged) the two states are three-way merged instead of clobbered.
         """
         with self._lock():
-            return self._commit_locked(message, trigger)
+            sha = self._commit_locked(message, trigger)
+        if sha:
+            # Outside the lock: the sync worker takes it again to read the store.
+            from .cloud.auto import trigger as autosync
+            autosync(self.path)
+        return sha
 
     def _commit_locked(self, message: str = None, trigger: str = 'explicit') -> Optional[str]:
         now = datetime.now(timezone.utc)

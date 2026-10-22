@@ -58,6 +58,10 @@ KNOWN_ENV_VARS: dict[str, str] = {
         'Set to 1/true/yes to keep decrypted keys out of credentials.json; the '
         'passphrase is then re-prompted per command.'
     ),
+    'MEMGIT_NO_AUTOSYNC': (
+        'Set to 1/true/yes to stop saves and session starts from syncing to '
+        'memgit cloud in the background, for this process only.'
+    ),
 
     # ── tuning ───────────────────────────────────────────────────────────────
     'MEMGIT_LOCK_TIMEOUT': 'Seconds a writer waits for the store lock before giving up (default 10).',

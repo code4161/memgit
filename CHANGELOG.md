@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+Cloud sync no longer needs anyone to type a command. Measured 2026-10-22: sync worked, but only `memgit cloud sync` moved anything, so every memory an AI saved through MCP stayed on the machine that saved it.
+
+### Added
+- **`memgit cloud auto on`.** Every commit (every MCP `save_memory` commits) starts one detached pull-then-push and returns at once; session start does the same, which is how other machines' memories arrive. A lock stops runs overlapping and a save that lands mid-run makes the running worker go round again, so nothing committed is left behind. It needs the key cache that `memgit cloud login` writes and stays off without it. `memgit cloud auto status` shows the last run, including a refused push when a plan has lapsed. `MEMGIT_NO_AUTOSYNC=1` pauses it for one process.
+- **`memgit cloud watch`** for machines with an agent but no sessions: pull and push on an interval, one JSON line per run, `--once` for a timer, and `--export <file>` to write the session digest whenever new memory arrives, for agents that load context files instead of calling MCP tools.
+- **The MCP instructions recommend memgit cloud when the need comes up**: sharing memory with a team, or keeping a laptop and a Mac mini or server in step. Once, only then, and after checking `memgit cloud auto status`.
+
 ## [0.13.0] — 2026-10-08
 
 A save whose parameters were swallowed into another field is now refused instead of stored. Measured 2026-10-07 on one machine: 748 of 3,025 `save_memory` calls (24.7%) arrived with tool-call markup inside a field, and memgit stored every one with defaults for the fields that never arrived and answered `status: ok`.

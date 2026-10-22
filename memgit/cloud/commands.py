@@ -416,3 +416,53 @@ def cloud_sync(thread, allow_uncommitted):
     pulled, pushed = _run(lambda: engine.sync(th), 'sync')
     _report(pulled, f'pull {th}')
     _report(pushed, f'push {th}')
+
+
+@cloud.command('auto')
+@click.argument('mode', type=click.Choice(['on', 'off', 'status']), default='status')
+def auto(mode):
+    """Sync automatically after every save and at session start."""
+    from . import auto as autosync
+    repo = _repo()
+    from .state import CloudState
+    cstate = CloudState(repo.path)
+    if mode != 'status':
+        cstate.save_state(autosync=(mode == 'on'))
+    st = autosync.status(repo.path)
+    if st['enabled']:
+        console.print('[green]✓[/green] autosync on: every save is pushed in the background, '
+                      'and each session start pulls other machines\' memories')
+        if mode == 'on':
+            autosync.trigger(repo.path)
+    else:
+        console.print('[yellow]·[/yellow] autosync off: ' + '; '.join(st['reasons']))
+    last = st['last']
+    if last:
+        if last.get('ok'):
+            console.print(f'  [dim]last run {last["at"]}: pull {last["pull"]}, push {last["push"]} '
+                          f'@ {last.get("head", "")}[/dim]')
+        else:
+            console.print(f'  [red]last run {last.get("at", "?")} failed:[/red] {last.get("error")}')
+
+
+@cloud.command()
+@click.option('--interval', default=60, show_default=True, help='seconds between syncs')
+@click.option('--once', is_flag=True, help='sync once and exit (for a systemd timer)')
+@click.option('--export', type=click.Path(dir_okay=False), default=None,
+              help='also write the session digest to this file whenever new memory arrives '
+                   '(for agents that load context files, such as Hermes .hermes.md)')
+def watch(interval, once, export):
+    """Keep a server's store in sync: pull and push on a loop, one JSON line per run.
+
+    For machines that run an agent but no interactive sessions, such as a Mac
+    mini or a VM. Run it under systemd or launchd; it needs a prior
+    `memgit cloud login` so the key is cached.
+    """
+    _require_extra()
+    from . import auto as autosync
+    repo = _repo()
+    st = autosync.status(repo.path)
+    missing = [r for r in st['reasons'] if not r.startswith('autosync is off')]
+    if missing:
+        _fail('; '.join(missing))
+    autosync.watch(repo.path, interval, once, export)

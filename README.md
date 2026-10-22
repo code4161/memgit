@@ -291,6 +291,29 @@ memgit pro deactivate         # remove the key from this machine
   exports keep working.
 - If this store is logged in to memgit cloud, `pro activate` also upgrades that account.
 
+### Sync between machines and with a team
+
+```bash
+memgit cloud signup --email you@example.com   # 14-day trial; keys are made on this machine
+memgit cloud team create myteam
+memgit cloud link myteam/memory               # creates the cloud repo on first link
+memgit cloud auto on                          # every save syncs in the background from now on
+```
+
+With autosync on, each save (including every `save_memory` your AI makes) starts one
+background pull-then-push and returns immediately, and each session start pulls what other
+machines saved. `memgit cloud auto status` shows the last run and why it would not run.
+
+On a machine that runs an agent but no interactive sessions (a Mac mini, a VM), log in and
+link once, then keep it current under systemd or launchd:
+
+```bash
+memgit cloud watch --interval 60                       # pull and push forever, one JSON line per run
+memgit cloud watch --export ~/agent/.hermes.md         # also write the digest for agents that read context files
+```
+
+Everything leaves the machine end-to-end encrypted; the server stores ciphertext only.
+
 ---
 
 ## Backups that actually happen
@@ -476,6 +499,7 @@ memgit talks to nothing.
 | Cloud sync | `MEMGIT_CLOUD_API` | Overrides the memgit cloud API base URL. |
 |  | `MEMGIT_CLOUD_APP` | Overrides the memgit cloud web app base URL used in printed links. |
 |  | `MEMGIT_CLOUD_NO_CACHE` | Set to 1/true/yes to keep decrypted keys out of credentials.json; the passphrase is then re-prompted per command. |
+|  | `MEMGIT_NO_AUTOSYNC` | Set to 1/true/yes to stop saves and session starts from syncing to memgit cloud in the background, for this process only. |
 | Tuning | `MEMGIT_LOCK_TIMEOUT` | Seconds a writer waits for the store lock before giving up (default 10). |
 |  | `MEMGIT_IDLE_EVICT_SECONDS` | Idle seconds before the MCP server drops its in-memory caches while staying connected (default 900). |
 |  | `MEMGIT_HOUSEKEEPING_INTERVAL` | Seconds between the MCP server's housekeeping passes. |
