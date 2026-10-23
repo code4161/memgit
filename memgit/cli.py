@@ -750,9 +750,15 @@ def resume(checkpoints, recent, plain, fmt_json, project):
     console.print()
 
 
-#: Hard character budget for the injected resume digest (~2.4k tokens). Paid
-#: at the start of EVERY session — past this, sections trim in a fixed order.
-RESUME_BUDGET_CHARS = 9_500
+#: Size at which Claude Code stops inlining hook output: above it the digest
+#: is saved to a file and the model sees a ~2 KB preview, so everything past
+#: the preview (status board, critical rules, index) never reaches context.
+#: Measured 2026-10-23: an 11,297-character digest was persisted, not inlined.
+HOST_INLINE_LIMIT_CHARS = 10_000
+#: Hard budget for the injected resume digest, with headroom under the host
+#: limit. Measured in UTF-16 code units, the way a JavaScript host counts
+#: string length (an emoji is two). Paid at the start of EVERY session.
+RESUME_BUDGET_CHARS = 9_000
 
 #: A status-board tracker not re-saved in this many days is flagged as possibly
 #: stale — trackers are only as fresh as their last write, so an old one may
@@ -766,33 +772,82 @@ def _tracker_age_days(ts) -> int:
     return max(0, (now - ts).days)
 
 
-def _format_resume_plain(ctx: dict) -> str:
-    """Plain-text resume digest — injected into AI context by the SessionStart
-    hook, under a hard budget of RESUME_BUDGET_CHARS.
+def _host_len(text: str) -> int:
+    """Length as a JavaScript host counts it (UTF-16 code units)."""
+    return len(text.encode('utf-16-le')) // 2
 
-    When the render exceeds the budget, sections are trimmed in a fixed
-    order — recent memories 10→5, checkpoints 5→3, critical-rule text
-    clipped to 160 chars, memory-index topics 8→5, recent 5→3 — re-rendering
-    after each cut until it fits. The core operating guide body and the
-    status board are NEVER trimmed: they are the two surfaces the model must
-    be able to trust in full.
+
+def _strip_auto_block(body: str) -> str:
+    """A core-guide body without its usage-ranked pointer block."""
+    from .delivery import AUTO_START, AUTO_END
+    if AUTO_START not in body:
+        return body
+    head, _, rest = body.partition(AUTO_START)
+    _, _, tail = rest.partition(AUTO_END)
+    return (head.rstrip() + '\n(auto pointers cut to fit the session-start '
+            'budget — memgit core show has them)\n' + tail.lstrip()).rstrip()
+
+
+def _format_resume_plain(ctx: dict, budget: int = None) -> str:
+    """Plain-text resume digest — injected into AI context by the SessionStart
+    hook, never longer than RESUME_BUDGET_CHARS.
+
+    The budget is a guarantee, not a target: a digest over the host's inline
+    limit is saved to a file and almost none of it is read, which is worse
+    than any trim. Sections trim in a fixed order, re-rendering after each
+    cut: recent memories, checkpoints, index and rule text first; then the
+    status board and critical list shrink; then the core guide loses its
+    auto-pointer block; and only as a last resort is the core guide body cut,
+    with a pointer to the full text.
     """
+    budget = budget or RESUME_BUDGET_CHARS
     text = _render_resume_plain(ctx)
-    if len(text) <= RESUME_BUDGET_CHARS:
+    if _host_len(text) <= budget:
         return text
     ctx = dict(ctx)  # never mutate the caller's context
+
+    def _core_no_auto(c):
+        c['core_memories'] = [dict(m, body=_strip_auto_block(m.get('body') or ''))
+                              for m in c.get('core_memories') or []]
+
     trims = (
         lambda c: c.update(recent_memories=c.get('recent_memories', [])[:5]),
         lambda c: c.update(checkpoints=c.get('checkpoints', [])[:3]),
         lambda c: c.update(_crit_clip=160),
         lambda c: c.update(entity_index=c.get('entity_index', [])[:5]),
         lambda c: c.update(recent_memories=c.get('recent_memories', [])[:3]),
+        lambda c: c.update(_tracker_clip=100, _crit_clip=130),
+        lambda c: c.update(_crit_max=12),
+        _core_no_auto,
+        lambda c: c.update(tracker_memories=c.get('tracker_memories', [])[:5],
+                           recent_memories=[], checkpoints=c.get('checkpoints', [])[:1]),
+        lambda c: c.update(_crit_max=8, _crit_clip=110, entity_index=[]),
     )
     for trim in trims:
         trim(ctx)
         text = _render_resume_plain(ctx)
-        if len(text) <= RESUME_BUDGET_CHARS:
-            break
+        if _host_len(text) <= budget:
+            return text
+
+    # Last resort: cut the core guide body to what is left, with a pointer.
+    over = _host_len(text) - budget
+    cores = ctx.get('core_memories') or []
+    if cores and not ctx.get('core_delivered'):
+        note = '\n…(core guide cut to fit; full text: memgit core show)'
+        total = sum(len(m.get('body') or '') for m in cores)
+        keep = max(0, total - over - len(note) * len(cores) - 50)
+        cut = []
+        for m in cores:
+            body = m.get('body') or ''
+            share = int(keep * len(body) / total) if total else 0
+            cut.append(dict(m, body=(body[:share].rstrip() + note) if share < len(body) else body))
+        ctx['core_memories'] = cut
+        text = _render_resume_plain(ctx)
+    if _host_len(text) > budget:
+        tail = '\n…(digest cut at the session-start budget)'
+        while _host_len(text) + _host_len(tail) > budget and text:
+            text = text[:max(0, len(text) - (_host_len(text) + _host_len(tail) - budget) - 1)]
+        text += tail
     return text
 
 
@@ -807,6 +862,8 @@ def _render_resume_plain(ctx: dict) -> str:
         return text if len(text) <= n else text[:n - 1] + '…'
 
     crit_clip = int(ctx.get('_crit_clip', 200))
+    crit_max = int(ctx.get('_crit_max', 20))
+    tracker_clip = int(ctx.get('_tracker_clip', 160))
 
     proj = f' · project {ctx["project"]}' if ctx.get('project') else ''
     lines = [
@@ -834,7 +891,20 @@ def _render_resume_plain(ctx: dict) -> str:
                 body = (m.get('body') or m['rule']).rstrip()
                 lines.append('')
                 lines.append(body)
-    # Status board: live entity state. Rendered right after the guide because
+    # Critical rules right after the guide, before the status board: a host
+    # that previews only the head of the digest must still see the rules,
+    # ranked (see Repository.resume_context) so the cut keeps the ones most
+    # likely to be broken.
+    if ctx.get('critical_memories'):
+        lines.append('')
+        lines.append('## Critical rules — always apply')
+        crit = ctx['critical_memories']
+        for m in crit[:crit_max]:
+            lines.append(f'- {m["slug"]}: {clip(m["rule"], crit_clip)}')
+        if len(crit) > crit_max:
+            lines.append(f'- …and {len(crit) - crit_max} more — run list_memories '
+                         'with min_priority=3')
+    # Status board: live entity state. Rendered right after the rules because
     # orientation ("what is the CURRENT state of things") is worth more than
     # history. The freshness stamp is what tells the model to trust or
     # re-verify a line.
@@ -847,7 +917,7 @@ def _render_resume_plain(ctx: dict) -> str:
             stamp = m['timestamp'].strftime('%m-%d')
             age = _tracker_age_days(m['timestamp'])
             stale = f' ⚠ {age}d old' if age >= STATUS_STALE_DAYS else ''
-            lines.append(f'- {m["slug"]} (upd {stamp}{stale}): {clip(m["rule"], 160)}')
+            lines.append(f'- {m["slug"]} (upd {stamp}{stale}): {clip(m["rule"], tracker_clip)}')
         lines.append('(State changed? Update the tracker: save_memory with the '
                      'same slug. ⚠ = not updated recently, may lag the files.)')
     st = ctx['staged']
@@ -876,14 +946,6 @@ def _render_resume_plain(ctx: dict) -> str:
                      if m.get('project') and m['project'] != ctx.get('project') else '')
             unv = ' ⚠unverified' if m.get('unverified') else ''
             lines.append(f'- {m["slug"]} ({m["type"]}, {ts}){other}{unv}: {clip(m["rule"], 160)}')
-    if ctx['critical_memories']:
-        lines.append('')
-        lines.append('## Critical rules — always apply')
-        crit = ctx['critical_memories']
-        for m in crit[:20]:
-            lines.append(f'- {m["slug"]}: {clip(m["rule"], crit_clip)}')
-        if len(crit) > 20:
-            lines.append(f'- …and {len(crit) - 20} more — run list_memories with min_priority=3')
     if ctx.get('maintenance'):
         lines.append('')
         lines.append(f'## Maintenance needed\n- {ctx["maintenance"]}')
@@ -945,6 +1007,34 @@ def hook_stop_guard():
     """Stop: nudge once if a substantive session saved nothing (stdin JSON)."""
     from .hooks import stop_guard
     sys.exit(stop_guard())
+
+
+@hook.command('action-gate')
+def hook_action_gate():
+    """PreToolUse: refuse or annotate calls governed by a rule's triggers (stdin JSON)."""
+    from .hooks import action_gate
+    sys.exit(action_gate())
+
+
+@cli.command('allow')
+@click.argument('slug')
+@click.option('--minutes', '-m', default=15, show_default=True,
+              help='How long the override lasts (max 120)')
+def allow_cmd(slug, minutes):
+    """Let calls governed by SLUG's triggers through for a short window.
+
+    For when the user has explicitly asked for an action a saved rule would
+    refuse. The override is logged, and the session's Stop check counts it as
+    a decision rather than a violation.
+    """
+    from .gate import allow
+    repo = _require_repo()
+    if repo.get(slug) is None:
+        err.print(f'[red]no memory with slug {slug!r}[/red]')
+        sys.exit(1)
+    until = allow(repo, slug, minutes)
+    console.print(f'[yellow]allowed[/yellow] calls governed by [cyan]{slug}[/cyan] '
+                  f'until {until.strftime("%H:%M:%S")} UTC')
 
 
 @hook.command('context-recall')
@@ -2514,8 +2604,13 @@ def gc(dry_run, squash_keep, reflog_keep, fmt_json):
               help='With --repair-markup: only this project')
 @click.option('--yes', 'confirm', is_flag=True,
               help='With --repair-markup: write the repair as one checkpoint')
+@click.option('--rules', 'check_rules', is_flag=True,
+              help="Compare this project's critical rules with the rule files "
+                   'its hosts load (CLAUDE.md, AGENTS.md, ...) and list '
+                   'same-topic passages to check for contradictions')
 def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
-           full_audit, fmt_json, repair_markup, repair_project, confirm):
+           full_audit, fmt_json, repair_markup, repair_project, confirm,
+           check_rules):
     """Diagnose and repair store hygiene: provenance, usage ledger, caches.
 
     With no options, prints a report: quarantined (`_unknown`) and
@@ -2602,6 +2697,10 @@ def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
         acted = True
         _repair_markup(repo, repair_project, confirm)
 
+    if check_rules:
+        acted = True
+        _doctor_rules(repo, fmt_json)
+
     if acted:
         return
 
@@ -2663,11 +2762,75 @@ def doctor(relabel_path, prune_slugs, clean_caches, prune_sessions,
     else:
         console.print('no memory carries tool-call markup in its fields')
 
+    # Critical behaviour rules with no trigger are enforced only by recall —
+    # the backlog the action gate cannot cover until each gets one.
+    from .gate import needs_trigger
+    from .links import filter_active
+    from .project import detect_project, project_affinity
+    here = detect_project()
+    untrig = [m for m in filter_active(mnemonics)
+              if needs_trigger(m.type_code, m.priority) and not m.triggers
+              and not m.unverified]
+    trig = [m for m in filter_active(mnemonics) if m.triggers]
+    if untrig:
+        mine = [m for m in untrig
+                if here and m.project and project_affinity(m.project, here) >= 1]
+        console.print(f'[yellow]{len(untrig)} critical behaviour rules (p3 fb/cn) '
+                      f'have no triggers[/yellow] — the action gate cannot '
+                      f'enforce them; {len(trig)} memories carry triggers')
+        for m in sorted(mine, key=lambda m: m.timestamp, reverse=True)[:10]:
+            console.print(f'  [dim]{m.slug}[/dim]')
+        if mine:
+            console.print(f'  [dim]({len(mine)} in {here}; add triggers with '
+                          f'save_memory triggers=[...])[/dim]')
+    else:
+        console.print(f'every critical behaviour rule carries triggers '
+                      f'({len(trig)} memories with triggers)')
+
     from .audit import audit as _audit
     rep = _audit(repo)
     _render_scope_losses(rep, full_audit)
     if fmt_json:
         console.print_json(data=rep)
+
+
+def _doctor_rules(repo, fmt_json: bool = False) -> None:
+    """Report same-topic pairs between critical rules and host rule files."""
+    import json as _j
+    from .drift import find_drift, rule_files
+    from .project import detect_project
+    project = detect_project()
+    files = rule_files(Path.cwd())
+    pairs = find_drift(repo.list(), files, project) if project else []
+    if fmt_json:
+        print(_j.dumps({
+            'project': project,
+            'files': [str(f) for f in files],
+            'pairs': [{'slug': d.slug, 'rule': d.rule, 'file': str(d.passage.path),
+                       'line': d.passage.line, 'passage': d.passage.text,
+                       'score': d.score} for d in pairs],
+        }, indent=2))
+        return
+    console.print(f'[bold]memgit doctor --rules[/bold] — project {project or "(none)"}, '
+                  f'{len(files)} rule file(s)')
+    for f in files:
+        console.print(f'  [dim]{f}[/dim]')
+    if not project:
+        console.print('[yellow]no project detected here — run from the project '
+                      'directory[/yellow]')
+        return
+    if not pairs:
+        console.print('no rule-file passage shares a topic with a critical rule')
+        return
+    console.print(f'{len(pairs)} same-topic pair(s). Each needs a reader: if the '
+                  'file says the opposite of the rule, change the file or '
+                  'supersede the rule, so the two stop disagreeing.\n')
+    for d in pairs:
+        rule = d.rule if len(d.rule) <= 200 else d.rule[:199] + '…'
+        text = d.passage.text if len(d.passage.text) <= 240 else d.passage.text[:239] + '…'
+        console.print(f'[cyan]{d.slug}[/cyan] [dim](score {d.score})[/dim]')
+        console.print(f'  rule: {rule}')
+        console.print(f'  {d.passage.path}:{d.passage.line}: {text}\n')
 
 
 def _repair_markup(repo, project, confirm) -> None:
@@ -3487,7 +3650,7 @@ def setup_antigravity(dry_run):
 
 #: substrings identifying a hook command as one of ours (any generation)
 _MEMGIT_HOOK_SIGNS = ('resume --plain', 'hook prompt-recall', 'hook stop-guard',
-                      'hook context-recall', ' sync')
+                      'hook context-recall', 'hook action-gate', ' sync')
 
 
 def _is_memgit_hook_entry(h: dict) -> bool:
@@ -3506,11 +3669,13 @@ def _is_memgit_hook_entry(h: dict) -> bool:
               help='Skip the end-of-session capture guard (Stop)')
 @click.option('--no-ctx-recall', is_flag=True,
               help='Skip the context-recall hook (PostToolUse on Read/Grep/Glob)')
+@click.option('--no-gate', is_flag=True,
+              help='Skip the action gate (PreToolUse on Bash and file writes)')
 @click.option('--dry-run', is_flag=True, help='Show the change without writing')
-def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
+def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, no_gate, dry_run):
     """Install the Claude Code hooks that make memory automatic.
 
-    Five hooks, one principle: what a hook enforces happens, what a tool
+    Six hooks, one principle: what a hook enforces happens, what a tool
     description suggests mostly doesn't (measured: 6% voluntary engagement
     vs 100% hook delivery).
 
@@ -3520,13 +3685,16 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
                         memory index
       UserPromptSubmit  inject memories relevant to each prompt (BM25,
                         silent when nothing clears the relevance bar)
+      PreToolUse        action gate — a Bash or file-write call matching a
+                        memory's triggers is refused (critical rules) or
+                        annotated (the rest); trigger cache only
       PostToolUse       context recall — reading a file whose path matches
                         a memory tag surfaces a one-line depth hint
                         (tagmap cache only, capped 3/session)
-      Stop              capture guard — a substantive session ending with
-                        zero memory writes gets ONE nudge to save durable
-                        facts; plus async `memgit sync` to checkpoint
-                        markdown memories
+      Stop              compliance replay + capture guard — a governed call
+                        that went through, or a substantive session ending
+                        with zero memory writes, gets ONE block; plus async
+                        `memgit sync` to checkpoint markdown memories
 
     Hooks live in ~/.claude/settings.json (unlike MCP servers, which live
     in ~/.claude.json).
@@ -3557,6 +3725,10 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
             {'type': 'command',
              'command': f'{base} hook prompt-recall 2>/dev/null || true'},
         ],
+        'PreToolUse': [] if no_gate else [
+            {'type': 'command',
+             'command': f'{base} hook action-gate 2>/dev/null || true'},
+        ],
         'PostToolUse': [] if no_ctx_recall else [
             {'type': 'command',
              'command': f'{base} hook context-recall 2>/dev/null || true'},
@@ -3576,10 +3748,11 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
     }
     #: PostToolUse fires per tool call — matcher limits it to the file-reading
     #: tools so the hook binary isn't spawned on every Bash/Edit.
-    _MATCHERS = {'PostToolUse': 'Read|Grep|Glob'}
+    from .gate import GATE_MATCHER
+    _MATCHERS = {'PreToolUse': GATE_MATCHER, 'PostToolUse': 'Read|Grep|Glob'}
 
     changed = []
-    for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'):
+    for event in ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop'):
         entries = hooks.setdefault(event, [])
         had = [h for h in entries if isinstance(h, dict) and _is_memgit_hook_entry(h)]
         entries[:] = [h for h in entries if h not in had]
@@ -3607,7 +3780,9 @@ def setup_hooks(remove, no_recall, no_guard, no_ctx_recall, dry_run):
             tag = ' [dim](async)[/dim]' if inner.get('async') else ''
             console.print(f'  [cyan]{event}[/cyan]  [dim]{inner["command"]}[/dim]{tag}')
     console.print('[dim]Resume at session start, relevant memories per prompt, '
-                  'context hints on file reads, capture guard + sync at stop.[/dim]')
+                  'rule triggers checked before Bash and file writes, '
+                  'context hints on file reads, compliance + capture guard + '
+                  'sync at stop.[/dim]')
 
 
 @setup.command('print-config')

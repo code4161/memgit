@@ -9,10 +9,16 @@ that don't survive on model discipline alone:
 - prompt-recall (UserPromptSubmit): BM25-match the user's prompt against
   the store and inject the top hits as context. Recall stops depending on
   the model thinking to search.
-- stop-guard (Stop): when a substantive session is about to end with zero
-  memory writes, block the stop ONCE with instructions to save durable
-  facts (or finish if nothing qualifies). Capture stops depending on the
-  model remembering unprompted.
+- action-gate (PreToolUse on Bash and the file-writing tools): match the
+  call against memories that carry `triggers` (see gate.py). A critical
+  behaviour rule DENIES the call with the rule as the reason; anything else
+  adds the rule as context. Recall stops depending on the user's words
+  happening to name the rule the agent is about to break.
+- stop-guard (Stop): first replay the session's tool calls against the
+  trigger cache and block ONCE if a governed call went through; then, when a
+  substantive session is about to end with zero memory writes, block the
+  stop ONCE with instructions to save durable facts (or finish if nothing
+  qualifies). Capture stops depending on the model remembering unprompted.
 
 Both read the hook payload from stdin, never write to stdout unless they
 have something to inject, and fail silent — a broken store must never
@@ -364,6 +370,135 @@ def context_recall() -> int:
     return 0
 
 
+# ── action gate (PreToolUse) ──────────────────────────────────────────────────
+
+def action_gate() -> int:
+    """PreToolUse (Bash|Write|Edit|...): enforce rules that carry triggers.
+
+    Reads only cache/triggers.json. No triggers, no match, or any error: no
+    output, and the call proceeds exactly as it would without memgit.
+    """
+    payload = _read_payload()
+    tool_name = payload.get('tool_name') or ''
+    tool_input = payload.get('tool_input') or {}
+    if not tool_name or not isinstance(tool_input, dict):
+        return 0
+    repo = _find_repo()
+    if repo is None:
+        return 0
+    try:
+        from . import gate
+        rows = gate.read_trigger_cache(repo)
+        if not rows:
+            return 0
+        from .project import detect_project
+        cwd = payload.get('cwd') or ''
+        project = detect_project(Path(cwd) if cwd else None)
+        hits = gate.matching_rules(rows, tool_name, tool_input, cwd, project)
+        if not hits:
+            return 0
+        session_id = payload.get('session_id')
+        sig = gate.call_signature(tool_name, tool_input)
+        deny = [r for r in hits if gate.is_deny(r)]
+        overridden = [r for r in deny if gate.allowed(repo, r['slug'])]
+        blocking = [r for r in deny if r not in overridden]
+        if blocking:
+            reason = gate.deny_reason(blocking)
+            gate.log_decision(repo, session_id, sig,
+                              [r['slug'] for r in blocking], 'deny')
+            print(json.dumps({'hookSpecificOutput': {
+                'hookEventName': 'PreToolUse',
+                'permissionDecision': 'deny',
+                'permissionDecisionReason': reason,
+            }}))
+            _record('action_gate', reason, repo)
+            _record_gate(repo, 'denied')
+            return 0
+        if overridden:
+            gate.log_decision(repo, session_id, sig,
+                              [r['slug'] for r in overridden], 'override')
+            _record_gate(repo, 'overridden')
+        # Context-only matches: once per slug per session, capped.
+        shown: set[str] = set()
+        marker = None
+        if session_id:
+            try:
+                marker = _session_cache_dir(repo, 'gate-context') / str(session_id)
+                shown = set(marker.read_text().split()) if marker.exists() else set()
+            except OSError:
+                marker = None
+        fresh = [r for r in hits if r['slug'] not in shown]
+        if overridden:
+            fresh = overridden + [r for r in fresh if r not in overridden]
+        if not fresh or (len(shown) >= gate.MAX_CONTEXT_PER_SESSION and not overridden):
+            return 0
+        text = gate.context_text(fresh)
+        if overridden:
+            text += ('\n(allowed by `memgit allow` override; the override is '
+                     'recorded.)')
+        print(json.dumps({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'additionalContext': text,
+        }}))
+        if marker is not None:
+            try:
+                shown.update(r['slug'] for r in fresh)
+                marker.write_text('\n'.join(sorted(shown)))
+            except OSError:
+                pass
+        gate.log_decision(repo, session_id, sig, [r['slug'] for r in fresh],
+                          'context')
+        _record('action_gate', text, repo)
+        _record_gate(repo, 'context')
+    except Exception:
+        return 0
+    return 0
+
+
+def _record(kind: str, text: str, repo) -> None:
+    try:
+        from .metrics import record_injection
+        from .tokens import count_tokens
+        record_injection(repo, kind, count_tokens(text))
+    except Exception:
+        pass
+
+
+def _record_gate(repo, outcome: str, n: int = 1) -> None:
+    try:
+        from .metrics import record_gate
+        record_gate(repo, outcome, n)
+    except Exception:
+        pass
+
+
+def _compliance_reason(repo, text: str, session_id, cwd) -> Optional[str]:
+    """Block text for governed calls that ran unchecked, or None."""
+    try:
+        from . import gate
+        from .project import detect_project
+        project = detect_project(Path(cwd) if cwd else None)
+        found = gate.find_violations(repo, text, session_id, project)
+    except Exception:
+        return None
+    if not found:
+        return None
+    _record_gate(repo, 'violations', len(found))
+    lines = ['memgit compliance check — these tool calls in this session '
+             'match a critical saved rule and ran without the action gate '
+             'stopping them:']
+    for call, row in found[:5]:
+        lines.append(f'- {gate.describe_call(call)}')
+        lines.append(f'  rule {gate._rule_line(row)}')
+    if len(found) > 5:
+        lines.append(f'- …and {len(found) - 5} more')
+    lines.append('Before finishing: undo or correct what each call did so the '
+                 'result follows the rule, or tell the user plainly that the '
+                 'rule was broken and what is left to fix. This check will not '
+                 'repeat.')
+    return '\n'.join(lines)
+
+
 # Markers in a transcript that count as "this session captured memory".
 # Anchored to tool_use JSON shapes: the plain tool NAME appears as text in
 # every transcript (the host embeds the tool list), so bare substrings
@@ -411,15 +546,24 @@ def stop_guard() -> int:
     except OSError:
         return 0
 
-    if len(_TOOL_USE_RE.findall(text)) < GUARD_MIN_TOOL_USES:
-        return 0
-    if any(rx.search(text) for rx in _CAPTURE_RES):
+    # Compliance first: a governed call that went through is worth more than
+    # a capture nudge, and the two share the one block this session gets.
+    compliance = _compliance_reason(repo, text, session_id, payload.get('cwd'))
+
+    capture_needed = (len(_TOOL_USE_RE.findall(text)) >= GUARD_MIN_TOOL_USES
+                      and not any(rx.search(text) for rx in _CAPTURE_RES))
+    if not compliance and not capture_needed:
         return 0
 
     try:
         marker.write_text('nudged')
     except OSError:
         return 0  # if we can't record the nudge, don't risk nudging forever
+
+    if not capture_needed:
+        print(json.dumps({'decision': 'block', 'reason': compliance}))
+        _record('stop_guard', compliance, repo)
+        return 0
 
     reason = (
         'memgit capture check — this session did substantial work but '
@@ -434,6 +578,8 @@ def stop_guard() -> int:
         'same slug, type tr). If genuinely nothing durable was learned, '
         'just finish your response; this check will not repeat.'
     )
+    if compliance:
+        reason = compliance + '\n\n' + reason
     print(json.dumps({'decision': 'block', 'reason': reason}))
     try:
         from .metrics import record_injection

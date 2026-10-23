@@ -178,6 +178,82 @@ def find_conflicts(new_m, existing: list[Mnemonic], scope_project=None,
     return out[:top_k]
 
 
+#: Memory types that state how to behave. A new one is compared with the
+#: existing ones, because two live rules pointing opposite ways is the case
+#: supersession exists for and nothing else catches.
+RULE_TYPES = ('fb', 'cn')
+#: TF-IDF cosine floor for naming the nearest existing rule. Measured
+#: 2026-10-23: the rule a new one replaced ranked FIRST in a 72-rule client
+#: pool (0.146) but sat mid-distribution, and the same pair scored 0.053 in a
+#: five-rule pool, so the absolute value says little. Rank is the signal; the
+#: floor only drops pairs with almost nothing in common. That makes this a
+#: "read this one" prompt on rule saves, never a claimed conflict.
+NEAREST_RULE_MIN = 0.05
+
+
+def nearest_rule(new_m, existing: list[Mnemonic], scope_project=None,
+                 exclude: Optional[set] = None,
+                 floor: float = NEAREST_RULE_MIN) -> Optional[tuple[str, float]]:
+    """The live rule (fb/cn) closest to `new_m` by TF-IDF cosine, or None.
+
+    BM25 is the wrong ruler here: with a whole rule as the query, every long
+    rule scores high and the one being replaced ranked third. Cosine over
+    rule + when, with IDF from the scoped rule pool, put it first. Only one
+    is ever named, and only for rule saves, so the prompt stays rare enough
+    to be read. Excludes the slug itself, anything already linked, and
+    `exclude` (e.g. slugs the save already flagged as duplicates).
+    """
+    import math
+    from collections import Counter
+    from .scorer import content_tokens as _tokenize
+    from .project import project_affinity
+
+    if new_m.type_code not in RULE_TYPES:
+        return None
+    skip = {new_m.slug} | set(new_m.supersedes or []) | set(new_m.related or []) \
+        | set(exclude or ())
+    pool = [m for m in filter_active(existing)
+            if m.type_code in RULE_TYPES and not m.unverified
+            and m.slug != new_m.slug
+            and (not scope_project or not m.project
+                 or project_affinity(m.project, scope_project) >= 1)]
+    if not pool:
+        return None
+
+    def toks(m):
+        return _tokenize((m.rule or '') + ' ' + (m.when or ''))
+
+    docs = {m.slug: toks(m) for m in pool}
+    new_toks = toks(new_m)
+    if not new_toks:
+        return None
+    df: Counter = Counter()
+    for t in docs.values():
+        df.update(set(t))
+    df.update(set(new_toks))
+    n = len(pool) + 1
+
+    def vec(tokens):
+        tf = Counter(tokens)
+        v = {t: (1 + math.log(c)) * math.log((n + 1) / (df[t] + 1))
+             for t, c in tf.items()}
+        norm = math.sqrt(sum(x * x for x in v.values())) or 1.0
+        return {t: x / norm for t, x in v.items()}
+
+    q = vec(new_toks)
+    best = None
+    for m in pool:
+        if m.slug in skip:
+            continue
+        d = vec(docs[m.slug])
+        c = sum(x * d.get(t, 0.0) for t, x in q.items())
+        if best is None or c > best[1] or (c == best[1] and m.slug < best[0]):
+            best = (m.slug, c)
+    if best is None or best[1] < floor:
+        return None
+    return best[0], round(best[1], 3)
+
+
 def normalize_slug_list(value) -> list[str]:
     """Coerce a user/LLM-supplied relation field into a clean slug list.
 

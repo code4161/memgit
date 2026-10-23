@@ -202,6 +202,7 @@ def _parse_mnemonic(
     supersedes: list[str] = []
     related: list[str] = []
     unverified = False
+    triggers: list = []
     # Fields written by a NEWER memgit than the one parsing. Kept verbatim and
     # written back out, so an older reader cannot silently strip a field it
     # does not know about. Without this, one rewrite by an older binary
@@ -265,6 +266,11 @@ def _parse_mnemonic(
                 inc = v
             elif k == 'COST':
                 cost = v
+            elif k == 'TRIG':
+                triggers = _parse_triggers(v)
+                if triggers is None:      # unreadable: keep the bytes, not a guess
+                    triggers = []
+                    extra[k] = v
             elif k and k.isupper():
                 extra[k] = v
 
@@ -289,8 +295,27 @@ def _parse_mnemonic(
         related=related,
         source=source,
         unverified=unverified,
+        triggers=triggers,
         extra=extra,
     )
+
+
+def _parse_triggers(v: str):
+    """TRIG value -> list of trigger dicts, or None when it is not valid JSON."""
+    import json
+    try:
+        data = json.loads(v)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return [t for t in data if isinstance(t, dict)]
+
+
+def _format_triggers(triggers: list) -> str:
+    import json
+    return json.dumps(triggers, sort_keys=True, separators=(',', ':'),
+                      ensure_ascii=False)
 
 
 def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
@@ -316,6 +341,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             fields.append(('DL', m.dl))
         if m.inc:
             fields.append(('INC', m.inc))
+        if m.triggers:
+            fields.append(('TRIG', _format_triggers(m.triggers)))
         if m.project:
             fields.append(('PROJ', m.project))
         fields.append(('RULE', m.rule))
@@ -372,6 +399,8 @@ def serialize_mnemonic(m: Mnemonic, canonical: bool = False) -> str:
             lines.append(f'INC:{_esc(m.inc)}')
         if m.cost:
             lines.append(f'COST:{_esc(m.cost)}')
+        if m.triggers:
+            lines.append(f'TRIG:{_esc(_format_triggers(m.triggers))}')
         for k in sorted(m.extra or {}):
             lines.append(f'{k}:{_esc(m.extra[k])}')
         if m.supersedes:

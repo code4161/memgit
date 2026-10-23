@@ -85,6 +85,25 @@ def _stem(token: str) -> str:
     return token
 
 
+#: Words too common in rule text to say what a rule is about. Used only by the
+#: similarity checks (nearest rule on save, rule-file drift), never by BM25.
+_CONTENT_STOP = frozenset("""
+a an and any are as at be been but by can do does don for from has have here
+how if in into is it its just may must no nor not of on one only or our out so
+than that the their them then there these they this those to too up use used
+via was we were what when where which while who why will with without you your
+always never every each all also own same such very
+""".split())
+
+
+def content_tokens(text: str) -> list[str]:
+    """Stemmed tokens minus filler words: what a sentence is ABOUT. For
+    comparing two rules with each other, where IDF over a small pool cannot
+    discount "the" and "on" on its own."""
+    return [_stem(t) for t in _tokenize(text)
+            if len(t) >= 2 and t not in _CONTENT_STOP]
+
+
 def tokenize_stemmed(text: str) -> list[str]:
     return [_stem(t) for t in _tokenize(text)]
 

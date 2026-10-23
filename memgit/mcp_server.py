@@ -156,6 +156,8 @@ def _mnem_to_dict(m: Mnemonic, score: float | None = None,
         d["desc"] = m.desc
     if m.project:
         d["project"] = m.project
+    if m.triggers:
+        d["triggers"] = m.triggers
     if m.unverified:
         # surface candidate status on read so the agent knows not to trust it
         # blindly (and can promote it with verify_memory)
@@ -541,6 +543,30 @@ def run_server(store_path: Path | None = None) -> None:
                                 "Slugs of related memories (cross-references, not replacement)."
                             ),
                         },
+                        "triggers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {"type": "string"},
+                                    "command": {"type": "string"},
+                                    "path": {"type": "string"},
+                                    "cwd": {"type": "string"},
+                                    "note": {"type": "string"},
+                                },
+                            },
+                            "description": (
+                                "The tool calls this rule governs, so it is enforced when the "
+                                "agent ACTS, not only when the user's words match it. Each item: "
+                                "command (regex on a Bash command) or path (glob on the file a "
+                                "Write/Edit touches), optionally tool (regex) and cwd (regex on "
+                                "where the action happens). A priority-3 fb/cn memory with a "
+                                "matching trigger REFUSES the call; others add the rule as context. "
+                                "Example: [{\"command\": \"git (checkout|switch) -b |git worktree add\", "
+                                "\"cwd\": \"api\"}, {\"path\": \"api/scripts/*.sql\"}]. "
+                                "Omit on an update to keep the existing triggers; [] clears them."
+                            ),
+                        },
                         "unverified": {
                             "type": "boolean",
                             "description": (
@@ -826,6 +852,20 @@ def run_server(store_path: Path | None = None) -> None:
             existing = repo.get(slug)
             now = datetime.now(timezone.utc)
 
+            # Triggers: validated before anything is stored, because a bad
+            # pattern fails silently forever (never fires, or fires on every
+            # call). Omitted on an update = keep what the memory had, so
+            # re-saving a rule to fix its wording never removes its gate.
+            from .gate import needs_trigger, validate_triggers
+            triggers_kept = False
+            if "triggers" in arguments:
+                triggers, trig_problems = validate_triggers(arguments.get("triggers"))
+                if trig_problems:
+                    raise ValueError("save_memory refused: " + "; ".join(trig_problems))
+            else:
+                triggers = list(existing.triggers) if existing and existing.triggers else []
+                triggers_kept = bool(triggers)
+
             from .links import validate_relations
             sup_list, rel_list, warnings = validate_relations(
                 slug, arguments.get("supersedes"), arguments.get("related"),
@@ -859,6 +899,7 @@ def run_server(store_path: Path | None = None) -> None:
                 supersedes=sup_list,
                 related=rel_list,
                 unverified=unverified,
+                triggers=triggers,
             )
 
             # Conflict/duplicate detection (multi-writer legibility): flag an
@@ -873,6 +914,15 @@ def run_server(store_path: Path | None = None) -> None:
                     scope_project=(project if project != UNKNOWN_PROJECT else None))
             except Exception:
                 conflicts = []
+            nearest = None
+            try:
+                from .links import nearest_rule
+                nearest = nearest_rule(
+                    m, all_mems,
+                    scope_project=(project if project != UNKNOWN_PROJECT else None),
+                    exclude={c[0] for c in conflicts})
+            except Exception:
+                nearest = None
 
             repo.add(m)
             # Checkpoint immediately with real provenance. Relying on a
@@ -916,6 +966,27 @@ def run_server(store_path: Path | None = None) -> None:
                     "supersedes=[...]; if merely related, related=[...]; if "
                     "genuinely distinct, ignore this note."
                 )
+            if nearest:
+                out["nearest_rule"] = nearest[0]
+                warnings.append(
+                    f"closest existing rule on this topic: {nearest[0]}. Read it "
+                    "(get_memory). If this rule replaces or contradicts it, "
+                    f"re-save with supersedes=[\"{nearest[0]}\"] so only one "
+                    "surfaces; if both stand, re-save with related=[...] and this "
+                    "note stops.")
+            if m.triggers:
+                out["triggers"] = len(m.triggers)
+                if triggers_kept:
+                    out["triggers_kept"] = True
+            elif needs_trigger(type_code, priority):
+                out["untriggered"] = True
+                warnings.append(
+                    "critical behaviour rule saved with no triggers, so it is "
+                    "enforced only if recall happens to surface it. If it governs "
+                    "an action (a command, a kind of file), re-save with "
+                    "triggers=[{\"command\": \"<regex>\"}] or "
+                    "[{\"path\": \"<glob>\"}] and the action gate will refuse "
+                    "the call itself.")
             if unverified:
                 out["unverified"] = True
                 if injection_hits:

@@ -182,15 +182,16 @@ memgit resume --json     # for tooling
 Wire it into Claude Code so memory becomes **automatic** — no tool call, no judgment required:
 
 ```bash
-memgit setup hooks       # installs all five hooks (~/.claude/settings.json)
+memgit setup hooks       # installs all six hooks (~/.claude/settings.json)
 ```
 
 | Hook | What it enforces |
 |---|---|
 | `SessionStart` | every session opens with the resume digest in context — status board, checkpoints, critical rules, memory index |
 | `UserPromptSubmit` | each prompt is BM25-matched against the store; relevant memories are injected, ending with a "+N more on '<topic>'" depth hint when more exists (silent when nothing clears the relevance bar; never repeats within a session) — `--no-recall` to skip |
+| `PreToolUse` | a Bash or file-write call that matches a memory's triggers is refused with the rule as the reason (priority-3 feedback and conventions) or gets the rule as context (the rest). memgit allow SLUG opens a short override window. Trigger cache only, `--no-gate` to skip |
 | `PostToolUse` | reading a file whose path matches a memory tag surfaces a one-line hint ("6 memories tagged 'x' relate to this path") — tagmap cache only, capped 3/session, `--no-ctx-recall` to skip |
-| `Stop` (guard) | a session that did real work but saved nothing gets ONE nudge to save durable facts before finishing — `--no-guard` to skip |
+| `Stop` (guard) | a governed call that went through without the gate, or a session that did real work but saved nothing, gets ONE block before finishing. `--no-guard` to skip |
 | `Stop` (sync) | markdown memories are checkpointed asynchronously at session end |
 
 Why hooks and not just good tool descriptions? We measured it: across 166 real sessions, hook-injected context was delivered in **100%** of them while voluntary memory-tool calls happened in **6%**. What a hook enforces happens.
@@ -434,7 +435,9 @@ memgit setup cline
 memgit setup continue
 memgit setup gemini-cli
 memgit setup hooks                # Claude Code hooks: resume at start, per-prompt recall,
-                                  # capture guard + auto-sync at stop (--no-recall / --no-guard)
+                                  # action gate on Bash and file writes, compliance and
+                                  # capture guard + auto-sync at stop (--no-recall / --no-guard / --no-gate)
+memgit doctor --rules             # critical rules next to same-topic lines in CLAUDE.md, AGENTS.md, ...
 
 # Pro (licence key)
 memgit pro activate <key>         # Polar-issued key; unlocks hosted E2E sync

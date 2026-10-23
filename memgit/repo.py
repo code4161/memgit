@@ -718,6 +718,10 @@ class Repository:
         # commit time so the per-tool-call hook never has to load the store.
         from .links import write_tagmap
         write_tagmap(self)
+        # Same for the action gate: it runs before every Bash/Write/Edit call
+        # and reads only this cache.
+        from .gate import write_trigger_cache
+        write_trigger_cache(self)
         return ck_sha
 
     # ── History ───────────────────────────────────────────────────────────────
@@ -1169,9 +1173,29 @@ class Repository:
                 m for m in mnemonics
                 if not m.project or project_affinity(m.project, project) >= 1
             ]
+        # Ranked, not alphabetical: the digest shows the first few, and a
+        # slug sort decided which by spelling (2026-10-23: 168 critical rules,
+        # 20 shown, and the two that were then broken both sat past the cut).
+        # Order: this exact workspace before its family before global; rules
+        # about behaviour (fb/cn) before facts; most recently saved or
+        # corrected first, because a rule saved as a correction is the one
+        # most likely to be broken again; then how often it has surfaced.
+        try:
+            from .usage import read_usage
+            usage = read_usage(self)
+        except Exception:
+            usage = {}
+
+        def _crit_key(m):
+            aff = project_affinity(m.project, project) if (project and m.project) else 0
+            kind = 0 if m.type_code in ('fb', 'cn') else 1
+            hits = int((usage.get(m.slug) or {}).get('hits', 0) or 0)
+            return (-aff, kind, -m.timestamp.timestamp(), -hits, m.slug)
+
         critical = [
-            {'slug': m.slug, 'rule': clean_for_context(m.rule)}
-            for m in sorted(critical_pool, key=lambda m: m.slug)
+            {'slug': m.slug, 'rule': clean_for_context(m.rule),
+             'triggered': bool(m.triggers)}
+            for m in sorted(critical_pool, key=_crit_key)
             if m.priority == 3 and not m.unverified   # candidates never "always apply"
         ]
 
@@ -1412,7 +1436,8 @@ class Repository:
         }
 
     #: Session-cache subdirectories swept by gc_caches (one file per session).
-    SESSION_CACHE_KINDS = ('recall', 'recall-hints', 'ctx-recall', 'stop-guard')
+    SESSION_CACHE_KINDS = ('recall', 'recall-hints', 'ctx-recall', 'stop-guard',
+                           'action-gate', 'gate-context')
     #: Session-cache files older than this are dead weight — sessions don't
     #: resume after a month.
     CACHE_MAX_AGE_DAYS = 30

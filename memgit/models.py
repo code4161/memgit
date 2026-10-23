@@ -36,6 +36,11 @@ class Mnemonic:
     #: until promoted (`memgit verify <slug>` or re-saved verified). Defaults
     #: False so every existing memory is trusted exactly as before.
     unverified: bool = False
+    #: Action triggers: the tool calls this rule governs, as a list of
+    #: {tool, command, path, cwd} dicts (regex for tool/command/cwd, glob for
+    #: path). Read by the PreToolUse action gate, so a rule fires on what the
+    #: agent DOES, not only on what the user says. Empty = recall-only.
+    triggers: list = field(default_factory=list)
     #: TOON fields written by a NEWER memgit than the one holding this object.
     #: Parsed and written back verbatim so an older reader cannot silently
     #: strip a field it does not understand. One rewrite by an older binary

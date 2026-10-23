@@ -37,7 +37,11 @@ CONVERSION_WINDOW_MIN = 30
 #: Cap the recent-advertised map so it can't grow unbounded.
 _MAX_RECENT_ADVERTISED = 200
 #: The injection surfaces we account for.
-KINDS = ("digest", "prompt_recall", "ctx_recall", "stop_guard")
+KINDS = ("digest", "prompt_recall", "ctx_recall", "stop_guard", "action_gate")
+#: Action-gate outcomes counted separately from token spend: how often the gate
+#: refused, annotated or was overridden, and how many governed calls the Stop
+#: replay found that went through anyway (the number that should reach zero).
+GATE_OUTCOMES = ("denied", "context", "overridden", "violations")
 
 
 def _path(repo) -> Path:
@@ -59,6 +63,7 @@ def _blank() -> dict:
         "advertised_total": 0,
         "acted_total": 0,
         "recent_advertised": {},   # tag -> iso timestamp of last advertisement
+        "gate": {k: 0 for k in GATE_OUTCOMES},
     }
 
 
@@ -72,7 +77,21 @@ def _load(repo) -> dict:
     inj = base["injections"]
     for k in KINDS:
         inj.setdefault(k, {"count": 0, "tokens": 0})
+    for k in GATE_OUTCOMES:
+        base["gate"].setdefault(k, 0)
     return base
+
+
+def record_gate(repo, outcome: str, n: int = 1) -> None:
+    """Count one action-gate outcome. Best-effort, never raises."""
+    if outcome not in GATE_OUTCOMES:
+        return
+    try:
+        data = _load(repo)
+        data["gate"][outcome] = int(data["gate"].get(outcome, 0)) + max(0, int(n))
+        _write(repo, data)
+    except Exception:
+        pass
 
 
 def _write(repo, data: dict) -> None:
@@ -191,6 +210,8 @@ def summary(repo) -> dict:
             "ctx_recall": _sessions("ctx-recall"),
             "stop_guard": _sessions("stop-guard"),
         },
+        "gate": {k: int((data.get("gate") or {}).get(k, 0))
+                 for k in GATE_OUTCOMES},
         "advertised_total": adv,
         "acted_total": acted,
         "conversion_pct": (round(100 * acted / adv, 1) if adv else None),

@@ -38,7 +38,8 @@ TEXT_FIELDS = ('rule', 'why', 'when', 'body')
 LIST_FIELDS = ('tags', 'related', 'supersedes')
 #: Every argument name save_memory accepts.
 SAVE_PARAMS = frozenset(
-    ('slug', 'project', 'type_code', 'type', 'priority', 'unverified')
+    ('slug', 'project', 'type_code', 'type', 'priority', 'unverified',
+     'triggers')
     + TEXT_FIELDS + LIST_FIELDS)
 #: Names a closing tag can carry and still read as a swallowed field closer.
 #: memory_type and desc are not parameters, but models have sent both.
