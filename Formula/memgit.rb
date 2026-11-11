@@ -1,7 +1,7 @@
 class Memgit < Formula
   include Language::Python::Virtualenv
 
-  desc "Git for AI memory — version-controlled context persistence across Claude, GPT, Cursor, Windsurf and more"
+  desc "One memory for Claude Code, Cursor and Codex on every machine, versioned"
   homepage "https://memgit.dev"
   url "https://files.pythonhosted.org/packages/source/m/memgit/memgit-0.14.3.tar.gz"
   sha256 "51de8ef1130ef99cd21937396a2056e7654147960b08c31c55df3638c7f457e8"

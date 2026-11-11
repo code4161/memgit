@@ -1,7 +1,7 @@
 {
   "name": "memgit",
   "displayName": "Memgit Tool",
-  "description": "Version-controlled context persistence for Claude Code, Cursor, Windsurf, and Copilot Chat.",
+  "description": "One memory for Claude Code, Cursor, Windsurf and Copilot Chat, versioned and shared across machines.",
   "version": "0.14.3",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",

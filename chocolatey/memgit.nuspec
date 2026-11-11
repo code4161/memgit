@@ -14,7 +14,7 @@
     <projectSourceUrl>https://github.com/code4161/memgit</projectSourceUrl>
     <bugTrackerUrl>https://github.com/code4161/memgit/issues</bugTrackerUrl>
     <tags>ai memory mcp claude cursor llm context version-control agent</tags>
-    <summary>Git for AI memory — persistent context across Claude, GPT, Cursor, Windsurf and more</summary>
+    <summary>One memory for Claude Code, Cursor and Codex on every machine, versioned</summary>
     <description>
 memgit gives your AI assistants persistent, version-controlled memory that follows you across tools.
 
