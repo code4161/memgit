@@ -10,6 +10,7 @@ import time
 import httpx
 
 DEFAULT_API_URL = 'https://api.memgit.dev'
+DEVICE_HEADER = 'X-Memgit-Device'
 
 
 class CloudError(Exception):
@@ -32,9 +33,14 @@ class ApiClient:
         self._http.close()
 
     # ── low-level ────────────────────────────────────────────────────────────
+    def _device_headers(self) -> dict:
+        # Sent on signup, login and refresh so the server can start the trial when a
+        # second machine connects. Without a store there is no device to name.
+        return {DEVICE_HEADER: self._state.device_id()} if self._state else {}
+
     def _request(self, method: str, path: str, *, json=None, params=None, auth=True,
-                 _retry=True) -> httpx.Response:
-        headers = {}
+                 _retry=True, device=False) -> httpx.Response:
+        headers = self._device_headers() if device else {}
         if auth:
             if not self.access:
                 raise CloudError('not logged in — run: memgit cloud login')
@@ -45,7 +51,8 @@ class ApiClient:
             raise CloudError(f'cannot reach {self.api_url}: {e}') from e
         if r.status_code == 401 and auth and _retry and self.refresh:
             self._do_refresh()
-            return self._request(method, path, json=json, params=params, auth=auth, _retry=False)
+            return self._request(method, path, json=json, params=params, auth=auth, _retry=False,
+                                 device=device)
         return r
 
     def _check(self, r: httpx.Response, *allowed: int) -> dict:
@@ -86,7 +93,8 @@ class ApiClient:
         # Someone may have refreshed between our reading the file and now.
         if self._adopt_saved_tokens():
             return
-        r = self._http.post('/v1/auth/refresh', json={'refresh': self.refresh})
+        r = self._http.post('/v1/auth/refresh', json={'refresh': self.refresh},
+                            headers=self._device_headers())
         if r.status_code != 200:
             # Lost a race for the same refresh token: the winner writes its
             # tokens within moments. Wait briefly for them before giving up.
@@ -106,7 +114,7 @@ class ApiClient:
     # ── auth ─────────────────────────────────────────────────────────────────
     def signup(self, email: str, auth_key: str, kdf_salt: str,
                public_key: str, enc_private_key: str) -> dict:
-        r = self._request('POST', '/v1/auth/signup', auth=False, json={
+        r = self._request('POST', '/v1/auth/signup', auth=False, device=True, json={
             'email': email, 'auth_key': auth_key, 'kdf_salt': kdf_salt,
             'public_key': public_key, 'enc_private_key': enc_private_key,
         })
@@ -119,7 +127,7 @@ class ApiClient:
         return self._check(r, 200)['kdf_salt']
 
     def login(self, email: str, auth_key: str) -> dict:
-        r = self._request('POST', '/v1/auth/login', auth=False,
+        r = self._request('POST', '/v1/auth/login', auth=False, device=True,
                           json={'email': email, 'auth_key': auth_key})
         if r.status_code == 401:
             raise CloudError('invalid email or passphrase')

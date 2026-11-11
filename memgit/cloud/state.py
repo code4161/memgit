@@ -6,11 +6,16 @@ Two files, both 0600, both JSON:
                      out of it (passphrase will be re-prompted per command).
   state.json       — repo link (team_id/repo_id) + per-thread {synced_remote_head, version},
                      memgit-cloud's equivalent of git's remote-tracking refs.
+  device-id        — a random id for this store, made once. The server counts distinct ids
+                     to start the trial at the second machine. It sits beside the credentials
+                     but is not in them, because logout deletes the credentials and a new id
+                     after logout and login would count this same machine twice.
 """
 from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 
@@ -19,6 +24,23 @@ class CloudState:
         self.dir = memgit_dir / 'cloud'
         self.creds_path = self.dir / 'credentials.json'
         self.state_path = self.dir / 'state.json'
+        self.device_path = self.dir / 'device-id'
+
+    def device_id(self) -> str:
+        """This store's device id, created on first use."""
+        try:
+            existing = self.device_path.read_text().strip()
+        except OSError:
+            existing = ''
+        if existing:
+            return existing
+        self.dir.mkdir(parents=True, exist_ok=True)
+        new = secrets.token_hex(16)
+        tmp = self.device_path.with_suffix('.tmp')
+        tmp.write_text(new + '\n')
+        os.chmod(tmp, 0o600)
+        tmp.replace(self.device_path)
+        return new
 
     def _read(self, path: Path) -> dict:
         if not path.exists():

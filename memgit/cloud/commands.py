@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import click
 from rich.console import Console
@@ -197,6 +198,31 @@ def _finish_setup(ctx, new_account: bool) -> None:
                       f'Run: memgit cloud link {DEFAULT_TEAM}/{DEFAULT_REPO} && memgit cloud auto on')
 
 
+def trial_line(user: dict) -> str:
+    """One factual sentence about the trial dates, from the server's user object.
+
+    Since 2026-11-11 the server starts the trial at the second machine or the first
+    teammate, so trial_ends_at is null on a new account; before that the account was
+    created with an end date. Both are worded from what the server sent.
+    """
+    import datetime as dt
+
+    def day(ts):
+        return dt.datetime.fromtimestamp(ts).date()
+
+    ends = user.get('trial_ends_at')
+    if ends:
+        verb = 'ended' if ends <= time.time() else 'runs until'
+        return f'Trial {verb} {day(ends)}.'
+    days = user.get('trial_days') or 14
+    deadline = user.get('trial_deadline_at')
+    line = (f'The {days}-day trial starts when a second machine connects to this account '
+            'or a teammate joins your team')
+    if deadline:
+        line += f', and on {day(deadline)} if neither has happened by then'
+    return line + '.'
+
+
 @click.group()
 def cloud():
     """E2E-encrypted team sync — app.memgit.dev"""
@@ -235,8 +261,7 @@ def signup(ctx, email, no_setup):
     if cstate.cache_keys_allowed():
         creds['private_key'] = crypto.b64u(bytes(keypair))
     cstate.save_creds(**creds)
-    console.print(f'[green]✓[/green] account created — trial until '
-                  f'{__import__("datetime").datetime.fromtimestamp(body["user"]["trial_ends_at"]).date()}')
+    console.print(f'[green]✓[/green] account created. {trial_line(body["user"])}')
     if not no_setup:
         _finish_setup(ctx, new_account=True)
 
@@ -286,9 +311,14 @@ def whoami():
         me = api.me()
     except CloudError as e:
         _fail(str(e))
-    import datetime as dt
-    trial = dt.datetime.fromtimestamp(me['trial_ends_at']).date()
-    console.print(f'[bold]{me["email"]}[/bold] · plan: {me["plan"]} (until {trial})')
+    if me.get('plan') == 'trial':
+        console.print(f'[bold]{me["email"]}[/bold] · plan: trial. {trial_line(me)}')
+    elif me.get('trial_ends_at'):
+        import datetime as dt
+        trial = dt.datetime.fromtimestamp(me['trial_ends_at']).date()
+        console.print(f'[bold]{me["email"]}[/bold] · plan: {me["plan"]} (until {trial})')
+    else:
+        console.print(f'[bold]{me["email"]}[/bold] · plan: {me["plan"]}')
     link = cstate.link()
     if link:
         console.print(f'linked: team={link[0][:8]}… repo={link[1].split(".",1)[1][:8]}…')
