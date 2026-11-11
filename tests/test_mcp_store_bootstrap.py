@@ -67,3 +67,39 @@ def test_an_unreadable_working_directory_is_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'is_dir', denied)
     found = Repository.find(tmp_path / 'somewhere' / 'else')
     assert found is not None and found.path == store / '.memgit'
+
+
+def test_init_connects_the_tools_it_finds_on_one_answer(tmp_path, monkeypatch):
+    """init used to end on three more commands; a store no tool reads is worth nothing."""
+    import json
+    from click.testing import CliRunner
+    from memgit.cli import cli
+
+    home = tmp_path / 'home'
+    (home / '.claude').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('MEMGIT_NO_AUTOSYNC', '1')
+    monkeypatch.delenv('MEMGIT_STORE', raising=False)
+    monkeypatch.setattr('pathlib.Path.home', lambda: home)
+
+    out = CliRunner().invoke(cli, ['init', '--yes'])
+    assert out.exit_code == 0, out.output
+    assert 'Ready.' in out.output and 'memgit cloud signup' in out.output
+    assert 'memgit' in json.loads((home / '.claude.json').read_text())['mcpServers']
+
+
+def test_init_without_a_terminal_changes_no_tool_config(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from memgit.cli import cli
+
+    home = tmp_path / 'home'
+    (home / '.claude').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('MEMGIT_NO_AUTOSYNC', '1')
+    monkeypatch.delenv('MEMGIT_STORE', raising=False)
+    monkeypatch.setattr('pathlib.Path.home', lambda: home)
+
+    out = CliRunner().invoke(cli, ['init'])
+    assert out.exit_code == 0, out.output
+    assert not (home / '.claude.json').exists()
+    assert 'Next steps' in out.output

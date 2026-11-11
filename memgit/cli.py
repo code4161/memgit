@@ -95,8 +95,18 @@ def _default_store_path() -> Path:
 
 @cli.command()
 @click.argument('directory', default=None, required=False, type=click.Path())
-def init(directory):
+@click.option('--yes', '-y', is_flag=True,
+              help='Connect the AI tools found on this machine without asking.')
+@click.option('--no-setup', is_flag=True,
+              help='Only create the store; do not offer to connect AI tools.')
+@click.pass_context
+def init(ctx, directory, yes, no_setup):
     """Initialize a memgit store.
+
+    One command gets from nothing to working memory: it creates the store,
+    imports the memory Claude Code already keeps, and offers to connect the AI
+    tools found on this machine (and Claude Code's hooks) so nothing else has
+    to be run. Without a terminal it only creates the store and imports.
 
     If no path is given, picks the best location automatically:
       · ~/.claude/memgit-store   (if Claude Code is installed)
@@ -147,10 +157,44 @@ def init(directory):
         else:
             console.print('[dim]Skipped — run [bold]memgit sync[/bold] anytime to import.[/dim]')
 
-    console.print(f'\n[bold]Next steps[/bold]')
-    console.print(f'  1. [bold]memgit setup[/bold]    register with your AI tools (interactive)')
-    console.print(f'  2. [bold]memgit onboard[/bold]  seed memories for a project that has none')
-    console.print(f'  3. [bold]memgit stats[/bold]    see what you saved')
+    # Measured 2026-11-11: init ended on three more commands to discover, and a
+    # newcomer who stopped there had a store no AI tool ever read. The tools
+    # are detected here and connected on one answer.
+    found_tools = []
+    if not no_setup:
+        for label, config_path, _patch, detect_path in _all_targets():
+            present = (detect_path.exists() if detect_path is not None
+                       else config_path.exists() or config_path.parent.exists())
+            if present:
+                found_tools.append(label)
+    connected = False
+    if found_tools:
+        names = ', '.join(found_tools)
+        console.print(f'\nAI tools on this machine: [bold]{names}[/bold]')
+        if yes or (sys.stdin.isatty() and click.confirm(
+                'Connect memgit to them now?', default=True)):
+            ctx.invoke(setup_all, dry_run=False)
+            if 'Claude Code' in found_tools:
+                try:
+                    ctx.invoke(setup_hooks, remove=False, no_recall=False, no_guard=False,
+                               no_ctx_recall=False, no_gate=False, dry_run=False)
+                except Exception as exc:   # hooks are an improvement, never a blocker
+                    console.print(f'[dim]Hooks not installed ({exc.__class__.__name__}: {exc}); '
+                                  f'run memgit setup hooks later.[/dim]')
+            connected = True
+
+    if connected:
+        console.print('\n[green]Ready.[/green] Restart your AI tool; it now starts every '
+                      'session with this memory and saves what it learns.')
+        console.print('  [bold]memgit resume[/bold]        what your AI will see at session start')
+        console.print('  [bold]memgit cloud signup[/bold]  the same memory on your other machines '
+                      'and for your team, end-to-end encrypted (14 days free, no card)')
+    else:
+        console.print(f'\n[bold]Next steps[/bold]')
+        console.print(f'  1. [bold]memgit setup[/bold]         connect your AI tools')
+        console.print(f'  2. [bold]memgit onboard[/bold]       seed memories for a project that has none')
+        console.print(f'  3. [bold]memgit cloud signup[/bold]  sync across machines and your team '
+                      f'(14 days free, no card)')
 
 
 # ── add ───────────────────────────────────────────────────────────────────────
