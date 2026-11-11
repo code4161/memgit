@@ -203,7 +203,7 @@ def sync_once(memgit_dir: Path) -> dict:
                    down=pulled.fetched, up=pushed.pushed,
                    head=(pushed.head or pulled.head or '')[:12])
     except CloudError as e:
-        # A lapsed plan answers 402 on push; pulls keep working. Record it so
+        # A lapsed plan answers 402: on push at once, on pull after the grace days. Record it so
         # `memgit cloud auto status` can say why memories stopped going out.
         out.update(ok=False, error=str(e))
     except StopIteration:
