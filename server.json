@@ -3,7 +3,7 @@
   "name": "dev.memgit/memgit",
   "title": "memgit",
   "description": "One memory for Claude Code, Cursor and Codex on every machine, versioned with diff and rollback",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "websiteUrl": "https://memgit.dev",
   "repository": {
     "url": "https://github.com/code4161/memgit",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "memgit-mcp",
-      "version": "0.14.3",
+      "version": "0.15.0",
       "transport": {
         "type": "stdio"
       }
@@ -23,7 +23,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "memgit",
-      "version": "0.14.3",
+      "version": "0.15.0",
       "transport": {
         "type": "stdio"
       },

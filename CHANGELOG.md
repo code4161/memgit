@@ -1,9 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [0.15.0] — 2026-11-12
 
 ### Added
 - **forget_memory MCP tool.** Agents can now remove a memory that is wrong or obsolete and that nothing replaces (when something does, save_memory with supersedes still keeps the link). The removal is a checkpoint with the reason in its message, the old version stays in history, and the response returns the forgotten memory so it can be saved again. A priority-3 or core-guide memory is refused unless the call passes confirm=true, so an instruction planted in a session cannot quietly erase the rules that guard it. The CLI equivalent remains memgit remove.
+
+### Changed
+- **Package descriptions say what memgit adds to built-in memory.** PyPI, npm, the MCP registry, VS Code, Homebrew and Chocolatey now read "One memory for Claude Code, Cursor and Codex on every machine, versioned" instead of "Git for AI memory".
+- **A Dockerfile and glama.json in the repository.** The Dockerfile builds the stdio MCP server from the checkout and runs it as an unprivileged user; glama.json names the maintainer for the Glama listing.
 
 ## [0.14.3] — 2026-11-11
 

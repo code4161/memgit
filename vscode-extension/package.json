@@ -2,7 +2,7 @@
   "name": "memgit",
   "displayName": "Memgit Tool",
   "description": "One memory for Claude Code, Cursor, Windsurf and Copilot Chat, versioned and shared across machines.",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "publisher": "code416-memgit",
   "icon": "assets/icon.png",
   "license": "MIT",
