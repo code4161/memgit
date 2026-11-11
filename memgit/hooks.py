@@ -93,6 +93,14 @@ def prompt_recall() -> int:
     if repo is None:
         return 0
 
+    # A long session never restarts, so this is where it learns what another
+    # machine saved: a background fetch when the last sync is old. Detached.
+    try:
+        from .cloud.auto import trigger_if_stale
+        trigger_if_stale(repo.path)
+    except Exception:
+        pass
+
     from .project import detect_project, scope_filter
     from .scorer import score as bm25_score
 

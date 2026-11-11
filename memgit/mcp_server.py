@@ -634,10 +634,37 @@ def run_server(store_path: Path | None = None) -> None:
         note_activity()
         repo = _load_repo(store_path)
         if repo is None:
+            # A host that starts the server through npx has no memgit on PATH,
+            # so "run memgit init" is an instruction nobody can follow. The
+            # server creates the store it was pointed at (or the default one).
+            try:
+                from .cli import _default_store_path
+                target = store_path or _default_store_path()
+                target.mkdir(parents=True, exist_ok=True)
+                Repository.init(target)
+                repo = _load_repo(target)
+            except Exception:
+                repo = None
+        if repo is None:
             return [TextContent(
                 type="text",
-                text="Error: memgit store not found. Run `memgit init` in ~/.claude/memgit-store/",
+                text=("Error: memgit store not found and could not be created at "
+                      f"{store_path or _default_store()}. Run `memgit init <dir>` "
+                      "and pass that directory as `memgit serve --store <dir>`."),
             )]
+
+        # Memories saved on other machines arrive here. A session start waits a
+        # bounded moment for the fetch; any other read starts one in the
+        # background when the last sync is old. A save syncs through its commit.
+        try:
+            from .cloud import auto as _auto
+            if name == "resume_session":
+                _auto.fetch_for_session(repo.path)
+                repo = _load_repo(repo.path.parent) or repo
+            elif name != "save_memory":
+                _auto.trigger_if_stale(repo.path)
+        except Exception:
+            pass
 
         if name == "resume_session":
             from .cli import _format_resume_plain

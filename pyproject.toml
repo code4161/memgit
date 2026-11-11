@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memgit"
-version = "0.13.0"
+version = "0.14.0"
 description = "Git for AI memory — version-controlled context persistence across Claude, GPT, Gemini, Cursor, Windsurf, and more"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -48,12 +48,19 @@ dependencies = [
     # resolver is allowed to pick and what a supply-chain scanner reads, so it
     # states the floor. Re-check the advisory list before lowering this.
     "mcp>=1.28.1,<2",
+    # Cloud sync (memgit cloud ...) used to sit behind the "cloud" extra, so a
+    # plain `pip install memgit` could sign up and then fail on its first sync.
+    # httpx already arrives with mcp; pynacl ships wheels for every platform
+    # this package supports.
+    "pynacl>=1.5",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-anyio>=0.0.0"]
 tokens = ["tiktoken>=0.7"]
-cloud = ["pynacl>=1.5", "httpx>=0.27"]
+# Kept so `pip install "memgit[cloud]"` in older instructions still resolves.
+cloud = []
 
 [project.urls]
 Homepage = "https://memgit.dev"

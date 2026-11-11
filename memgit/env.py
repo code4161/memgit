@@ -62,6 +62,15 @@ KNOWN_ENV_VARS: dict[str, str] = {
         'Set to 1/true/yes to stop saves and session starts from syncing to '
         'memgit cloud in the background, for this process only.'
     ),
+    'MEMGIT_AUTOSYNC_MAX_AGE': (
+        'Seconds after which a read (search, recall, an MCP lookup) starts a '
+        'background fetch from memgit cloud (default 300). 0 turns '
+        'read-triggered fetching off; saves and session starts still sync.'
+    ),
+    'MEMGIT_AUTOSYNC_WAIT': (
+        'Seconds a session start waits for the fetch from memgit cloud before '
+        'rendering the digest (default 3). 0 never waits.'
+    ),
 
     # ── tuning ───────────────────────────────────────────────────────────────
     'MEMGIT_LOCK_TIMEOUT': 'Seconds a writer waits for the store lock before giving up (default 10).',

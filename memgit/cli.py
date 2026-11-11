@@ -658,10 +658,12 @@ def resume(checkpoints, recent, plain, fmt_json, project):
     from .project import detect_project
     repo = _require_repo()
     # Session start is when another machine's memories should arrive. The pull
-    # runs detached, so the digest is never held up by the network.
+    # runs detached and the digest waits a bounded moment for it (3 s unless
+    # MEMGIT_AUTOSYNC_WAIT says otherwise), so a quick network puts them in
+    # this digest and a slow one never holds it up.
     try:
-        from .cloud.auto import trigger as autosync
-        autosync(repo.path)
+        from .cloud.auto import fetch_for_session
+        fetch_for_session(repo.path)
     except Exception:
         pass
     if project is None:
@@ -3940,8 +3942,8 @@ except Exception:
     # extras missing or broken — plain memgit must keep working untouched
     @cli.group()
     def cloud():
-        """E2E-encrypted team sync — requires: pip install 'memgit[cloud]'"""
+        """E2E-encrypted team sync — its dependencies failed to import; reinstall memgit."""
 
     @cloud.command('setup', help="Show how to enable cloud sync.")
     def _cloud_setup_hint():
-        console.print(r"Install the cloud extra first:  [bold]pip install 'memgit\[cloud]'[/bold]")
+        console.print("Cloud sync could not load pynacl or httpx. Reinstall:  [bold]pip install --upgrade --force-reinstall memgit[/bold]")

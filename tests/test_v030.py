@@ -289,6 +289,9 @@ def _make_git_repo(root: Path):
         subprocess.run(["git"] + list(args), cwd=root, capture_output=True,
                        env={"GIT_AUTHOR_NAME": "Tester", "GIT_AUTHOR_EMAIL": "t@t",
                             "GIT_COMMITTER_NAME": "Tester", "GIT_COMMITTER_EMAIL": "t@t",
+                            # A developer's global config (commit signing,
+                            # hooks) must not decide whether this commits.
+                            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                             "PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")})
     g("init", "-q", "-b", "main")
     (root / "README.md").write_text("# proj")

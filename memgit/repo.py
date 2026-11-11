@@ -274,10 +274,22 @@ class Repository:
         If none is found, fall back to the well-known store locations that
         `memgit init` auto-detects, so commands work from any directory.
         """
-        current = Path(start or Path.cwd())
-        while True:
+        def is_store(candidate: Path) -> bool:
+            # A directory this user may not read (a service account started
+            # from another user's home, measured 2026-11-11) is not a store;
+            # it used to end every command in a PermissionError traceback.
+            try:
+                return candidate.is_dir()
+            except OSError:
+                return False
+
+        try:
+            current = Path(start or Path.cwd())
+        except OSError:      # the working directory was removed under us
+            current = None
+        while current is not None:
             candidate = current / '.memgit'
-            if candidate.is_dir():
+            if is_store(candidate):
                 return cls(candidate)
             parent = current.parent
             if parent == current:
@@ -286,7 +298,7 @@ class Repository:
 
         for store in default_store_candidates():
             candidate = store / '.memgit'
-            if candidate.is_dir():
+            if is_store(candidate):
                 return cls(candidate)
         return None
 
@@ -600,9 +612,14 @@ class Repository:
                     try:
                         t_ts = self.store.read_mnemonic(t).timestamp
                         o_ts = self.store.read_mnemonic(o).timestamp
-                        winner = t if t_ts > o_ts else o
+                        # Mnemonic timestamps are stored to the minute, so two
+                        # machines editing the same memory often tie. "Ours on a
+                        # tie" gave each machine a different winner and their
+                        # stores never agreed again (measured 2026-11-11). The
+                        # object id breaks the tie the same way everywhere.
+                        winner = t if (t_ts, t) > (o_ts, o) else o
                     except Exception:
-                        winner = o
+                        winner = max(t, o)
             if winner is not None:
                 merged[slug] = winner
         return merged, sorted(conflicts)

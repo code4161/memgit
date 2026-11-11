@@ -126,7 +126,7 @@ pip install memgit
 ```
 (The Chocolatey package is live on community.chocolatey.org; newly pushed versions can take a few days to clear moderation — `pip install memgit` always has the latest.)
 
-**Any AI tool config (no Python needed — npx auto-installs on first run):**
+**Any AI tool config (needs Python 3.11+ on PATH; npx installs memgit into its own environment on first run and creates the store):**
 ```json
 { "mcpServers": { "memgit": { "command": "npx", "args": ["-y", "memgit-mcp"] } } }
 ```
@@ -503,6 +503,8 @@ memgit talks to nothing.
 |  | `MEMGIT_CLOUD_APP` | Overrides the memgit cloud web app base URL used in printed links. |
 |  | `MEMGIT_CLOUD_NO_CACHE` | Set to 1/true/yes to keep decrypted keys out of credentials.json; the passphrase is then re-prompted per command. |
 |  | `MEMGIT_NO_AUTOSYNC` | Set to 1/true/yes to stop saves and session starts from syncing to memgit cloud in the background, for this process only. |
+|  | `MEMGIT_AUTOSYNC_MAX_AGE` | Seconds after which a read (search, recall, an MCP lookup) starts a background fetch from memgit cloud (default 300). 0 turns read-triggered fetching off; saves and session starts still sync. |
+|  | `MEMGIT_AUTOSYNC_WAIT` | Seconds a session start waits for the fetch from memgit cloud before rendering the digest (default 3). 0 never waits. |
 | Tuning | `MEMGIT_LOCK_TIMEOUT` | Seconds a writer waits for the store lock before giving up (default 10). |
 |  | `MEMGIT_IDLE_EVICT_SECONDS` | Idle seconds before the MCP server drops its in-memory caches while staying connected (default 900). |
 |  | `MEMGIT_HOUSEKEEPING_INTERVAL` | Seconds between the MCP server's housekeeping passes. |

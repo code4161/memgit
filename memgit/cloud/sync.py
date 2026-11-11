@@ -168,6 +168,23 @@ class SyncEngine:
                 f'thread {thread!r} diverged from remote but is not the current thread; '
                 f'switch to it first (memgit thread switch {thread})'
             )
+        # A checkpoint has one parent, so a merge made on another machine is
+        # never a descendant of this machine's head and looks diverged forever.
+        # When merging would leave exactly what the remote already holds, there
+        # is nothing of ours to add: take the remote head. Without this, two
+        # machines answered each other's merge with a new merge on every sync
+        # and each push replaced the other's head (measured 2026-11-11).
+        base_sha = self.repo.merge_base(local_head, remote_head)
+        base_map = self.repo._mindstate_map(base_sha) if base_sha else {}
+        theirs_map = self.repo._mindstate_map(remote_head)
+        merged_map, tie_conflicts = self.repo._merge_maps(
+            base_map, theirs_map, self.repo.get_index())
+        if merged_map == theirs_map:
+            self._fast_forward(thread, remote_head)
+            self.cstate.set_thread_state(thread, remote_head, ref['version'])
+            return SyncResult(action='fast-forward', fetched=fetched,
+                              head=remote_head, conflicts=tie_conflicts)
+
         self.repo._set_ref(TEMP_MERGE_THREAD, remote_head)
         try:
             new_sha, conflicts, _diff = self.repo.merge_thread(

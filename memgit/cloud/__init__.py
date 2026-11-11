@@ -1,6 +1,7 @@
 """memgit cloud — E2E-encrypted team sync (app.memgit.dev).
 
-Everything in this package is optional: it is only imported when a `memgit cloud …`
-command runs, and requires the `memgit[cloud]` extra (pynacl + httpx). Core memgit
-never imports it.
+Nothing here runs until a store is logged in and linked. The rest of memgit
+imports only `auto`, lazily, to start a background sync after a commit, at
+session start, and from a read when the last sync is old. pynacl and httpx are
+ordinary dependencies of the package.
 """

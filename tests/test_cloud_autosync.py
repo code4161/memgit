@@ -151,3 +151,98 @@ def test_watch_exports_the_digest_once_per_new_head(tmp_path, monkeypatch):
     auto.watch(repo.path, 1, once=True, export=out)
     assert "for-hermes" in out.read_text()
     assert len(writes) == 1
+
+
+# ── fetching on reads and at session start ───────────────────────────────────
+
+def _last(repo: Repository, age_secs: float, ok: bool = True) -> None:
+    at = datetime.fromtimestamp(time.time() - age_secs, tz=timezone.utc)
+    (repo.path / "cloud" / "autosync-last.json").write_text(json.dumps(
+        {"at": at.isoformat(timespec="seconds"), "ok": ok}))
+
+
+def test_a_read_fetches_when_never_synced_and_not_again_while_fresh(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo)
+    spawn = _Spawn()
+    monkeypatch.setattr(auto.subprocess, "Popen", spawn)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+    monkeypatch.delenv("MEMGIT_AUTOSYNC_MAX_AGE", raising=False)
+    assert auto.trigger_if_stale(repo.path)
+    _last(repo, age_secs=10)
+    assert not auto.trigger_if_stale(repo.path)
+    assert len(spawn.calls) == 1
+
+
+def test_a_read_fetches_once_the_last_sync_is_old(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo)
+    spawn = _Spawn()
+    monkeypatch.setattr(auto.subprocess, "Popen", spawn)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+    monkeypatch.delenv("MEMGIT_AUTOSYNC_MAX_AGE", raising=False)
+    _last(repo, age_secs=auto.FETCH_MAX_AGE_SECS + 5)
+    assert auto.trigger_if_stale(repo.path)
+    assert len(spawn.calls) == 1
+
+
+def test_a_failed_sync_backs_off_instead_of_retrying_on_every_read(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo)
+    spawn = _Spawn()
+    monkeypatch.setattr(auto.subprocess, "Popen", spawn)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+    monkeypatch.delenv("MEMGIT_AUTOSYNC_MAX_AGE", raising=False)
+    _last(repo, age_secs=auto.FETCH_MAX_AGE_SECS + 5, ok=False)
+    assert not auto.trigger_if_stale(repo.path)
+    _last(repo, age_secs=auto.FAILURE_BACKOFF_SECS + 5, ok=False)
+    assert auto.trigger_if_stale(repo.path)
+    assert len(spawn.calls) == 1
+
+
+def test_max_age_zero_turns_read_fetching_off(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo)
+    spawn = _Spawn()
+    monkeypatch.setattr(auto.subprocess, "Popen", spawn)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+    monkeypatch.setenv("MEMGIT_AUTOSYNC_MAX_AGE", "0")
+    assert not auto.trigger_if_stale(repo.path)
+    assert spawn.calls == []
+
+
+def test_a_read_never_fetches_when_autosync_is_off(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo, autosync=False)
+    spawn = _Spawn()
+    monkeypatch.setattr(auto.subprocess, "Popen", spawn)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+    assert not auto.trigger_if_stale(repo.path)
+    assert not auto.fetch_for_session(repo.path)
+    assert spawn.calls == []
+
+
+def test_session_start_waits_for_a_quick_fetch_and_gives_up_on_a_slow_one(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _ready(repo)
+    monkeypatch.delenv(auto.DISABLE_ENV, raising=False)
+
+    def quick(args, **kw):
+        _last(repo, age_secs=-1)   # the worker finished and recorded a new run
+
+    monkeypatch.setattr(auto.subprocess, "Popen", quick)
+    assert auto.fetch_for_session(repo.path, wait=2)
+
+    monkeypatch.setattr(auto.subprocess, "Popen", lambda args, **kw: None)
+    started = time.monotonic()
+    assert not auto.fetch_for_session(repo.path, wait=0.3)
+    assert time.monotonic() - started < 1.5
+
+
+def test_any_failure_is_recorded_not_only_a_refused_request(tmp_path):
+    repo = _repo(tmp_path)
+    _ready(repo)   # credentials hold a private_key that is not a key
+    out = auto.sync_once(repo.path)
+    assert out["ok"] is False and out["error"]
+    saved = json.loads((repo.path / "cloud" / "autosync-last.json").read_text())
+    assert saved["ok"] is False

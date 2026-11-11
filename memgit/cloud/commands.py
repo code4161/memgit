@@ -26,7 +26,8 @@ def _require_extra():
         import httpx  # noqa: F401
         import nacl  # noqa: F401
     except ImportError:
-        console.print(r"[red]✗[/red] cloud sync needs extra dependencies — install with: pip install 'memgit\[cloud]'")
+        console.print("[red]✗[/red] cloud sync could not load pynacl or httpx — reinstall with: "
+                      "pip install --upgrade --force-reinstall memgit")
         sys.exit(1)
 
 
@@ -128,6 +129,74 @@ def _run(engine_call, label: str):
 
 # ── group ────────────────────────────────────────────────────────────────────
 
+DEFAULT_TEAM = 'personal'
+DEFAULT_REPO = 'memory'
+
+
+def _finish_setup(ctx, new_account: bool) -> None:
+    """Leave a store that has just signed up or logged in already syncing.
+
+    Measured 2026-11-11: after `memgit cloud signup` nothing synced until three
+    more commands were typed (team create, link, auto on), each of which a
+    newcomer had to discover. A new account gets a personal team and one repo;
+    a second machine links to the account's only repo; both turn autosync on.
+    When the account has several repos the choice is the user's, so they are
+    listed and nothing is linked.
+    """
+    from . import auto as autosync
+    from . import crypto
+    from nacl.public import PrivateKey
+    repo, cstate, api = _ctx()
+    try:
+        if not cstate.link():
+            target = None
+            if new_account:
+                ctx.invoke(team_create, name=DEFAULT_TEAM)
+                target = f'{DEFAULT_TEAM}/{DEFAULT_REPO}'
+            else:
+                priv = _private_key(cstate, api)
+                pub = bytes(PrivateKey(priv).public_key)
+                choices = []
+                teams = api.my_teams()
+                for t in teams:
+                    key = crypto.seal_open(t['wrapped_team_key'], pub, priv)
+                    tname = crypto.decrypt_meta(key, t['team']['name_enc'])
+                    repos = api.team_detail(t['team']['id'])['repos']
+                    choices += [f"{tname}/{crypto.decrypt_meta(key, r['name_enc'])}" for r in repos]
+                    if not repos:
+                        choices.append(f'{tname}/{DEFAULT_REPO}')
+                if not teams:
+                    ctx.invoke(team_create, name=DEFAULT_TEAM)
+                    target = f'{DEFAULT_TEAM}/{DEFAULT_REPO}'
+                elif len(choices) == 1:
+                    target = choices[0]
+                else:
+                    console.print('This account has more than one cloud repo. Link this store to one:')
+                    for c in choices:
+                        click.echo(f'  memgit cloud link {c}')
+                    return
+            ctx.invoke(link, target=target)
+        _, cstate, _ = _ctx()
+        if not cstate.creds.get('private_key'):
+            console.print('[yellow]·[/yellow] key caching is off (MEMGIT_CLOUD_NO_CACHE), so sync '
+                          'stays manual: memgit cloud sync')
+            return
+        if cstate.state.get('autosync') is None:
+            cstate.save_state(autosync=True)
+        if autosync.status(repo.path)['enabled']:
+            autosync.trigger(repo.path)
+            console.print('[green]✓[/green] this store now syncs on its own: every save goes up, and '
+                          'other machines\' memories arrive at session start and while you work')
+            if new_account:
+                console.print('  On another machine:  [bold]pip install memgit && memgit init && '
+                              'memgit cloud login[/bold]')
+    except SystemExit:
+        raise
+    except Exception as e:  # the account exists and is logged in; say what is left to do
+        console.print(f'[yellow]·[/yellow] could not finish setup ({type(e).__name__}: {e}). '
+                      f'Run: memgit cloud link {DEFAULT_TEAM}/{DEFAULT_REPO} && memgit cloud auto on')
+
+
 @click.group()
 def cloud():
     """E2E-encrypted team sync — app.memgit.dev"""
@@ -135,7 +204,9 @@ def cloud():
 
 @cloud.command()
 @click.option('--email', prompt=True)
-def signup(email):
+@click.option('--no-setup', is_flag=True, help='Only create the account; do not create a team, link or turn autosync on.')
+@click.pass_context
+def signup(ctx, email, no_setup):
     """Create a memgit cloud account (free trial; the server sets the length).
 
     The trial length is stamped by the server at signup and printed below, so this
@@ -166,11 +237,15 @@ def signup(email):
     cstate.save_creds(**creds)
     console.print(f'[green]✓[/green] account created — trial until '
                   f'{__import__("datetime").datetime.fromtimestamp(body["user"]["trial_ends_at"]).date()}')
+    if not no_setup:
+        _finish_setup(ctx, new_account=True)
 
 
 @cloud.command()
 @click.option('--email', prompt=True)
-def login(email):
+@click.option('--no-setup', is_flag=True, help='Only log in; do not link this store or turn autosync on.')
+@click.pass_context
+def login(ctx, email, no_setup):
     """Log in and unlock your keys."""
     _require_extra()
     from . import crypto
@@ -189,6 +264,8 @@ def login(email):
         creds['private_key'] = crypto.b64u(priv)
     cstate.save_creds(**creds)
     console.print(f'[green]✓[/green] logged in as {email}')
+    if not no_setup:
+        _finish_setup(ctx, new_account=False)
 
 
 @cloud.command()
@@ -333,7 +410,7 @@ def link(target):
     cstate.save_state(team_id=t['id'], repo_id=repo_doc['id'],
                       team_name=team_name, repo_name=repo_name)
     console.print(f'[green]✓[/green] linked to [bold]{team_name}/{repo_name}[/bold] '
-                  f'— now: memgit cloud sync')
+                  f'— sync once with memgit cloud sync, or leave it to memgit cloud auto on')
 
 
 def _report(res, direction):

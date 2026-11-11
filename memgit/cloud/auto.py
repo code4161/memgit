@@ -27,6 +27,20 @@ from pathlib import Path
 DISABLE_ENV = 'MEMGIT_NO_AUTOSYNC'
 STALE_LOCK_SECS = 600
 
+# When a read should fetch. A commit always syncs; a read (search, recall, an
+# MCP lookup) starts a background sync only when the last one is older than
+# this, so a long session still receives what other machines saved without a
+# request per query. MEMGIT_AUTOSYNC_MAX_AGE overrides it in seconds; 0 turns
+# read-triggered fetching off.
+FETCH_MAX_AGE_SECS = 300
+# After a failed run (plan lapsed, offline, key refused) reads wait this long
+# before asking again. Asking on every read is how a refusal becomes a flood.
+FAILURE_BACKOFF_SECS = 900
+# Session start waits at most this long for the fetch, so the digest carries
+# other machines' memories when the network is quick and is never held up when
+# it is not. MEMGIT_AUTOSYNC_WAIT overrides it in seconds; 0 never waits.
+SESSION_WAIT_SECS = 3.0
+
 
 def _cloud_dir(memgit_dir: Path) -> Path:
     return Path(memgit_dir) / 'cloud'
@@ -84,6 +98,72 @@ def trigger(memgit_dir: Path) -> bool:
         return False
 
 
+def _env_secs(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, '')))
+    except ValueError:
+        return default
+
+
+def _age_secs(last: dict) -> float | None:
+    """Seconds since the last recorded run, or None when there has been none."""
+    try:
+        at = datetime.fromisoformat(last['at'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (datetime.now(timezone.utc) - at).total_seconds()
+
+
+def due(memgit_dir: Path) -> bool:
+    """Whether a read should start a fetch: never synced, or the last run is old.
+
+    A failed run is retried after FAILURE_BACKOFF_SECS, not FETCH_MAX_AGE_SECS.
+    """
+    max_age = _env_secs('MEMGIT_AUTOSYNC_MAX_AGE', FETCH_MAX_AGE_SECS)
+    if max_age <= 0:
+        return False
+    last = _read_json(_cloud_dir(memgit_dir) / 'autosync-last.json')
+    age = _age_secs(last)
+    if age is None:
+        return True
+    if last.get('ok') is False:
+        return age >= max(max_age, FAILURE_BACKOFF_SECS)
+    return age >= max_age
+
+
+def trigger_if_stale(memgit_dir: Path) -> bool:
+    """Start a background fetch from a read path, when one is due. Never raises."""
+    try:
+        if not enabled(memgit_dir) or not due(memgit_dir):
+            return False
+        return trigger(memgit_dir)
+    except Exception:
+        return False
+
+
+def fetch_for_session(memgit_dir: Path, wait: float | None = None) -> bool:
+    """Session start: start a sync and give it a moment to land. Never raises.
+
+    Returns True when a run finished inside the wait, so the caller's digest
+    was built from a store that already holds the other machines' memories.
+    """
+    try:
+        d = _cloud_dir(memgit_dir)
+        before = _read_json(d / 'autosync-last.json').get('at')
+        if not trigger(memgit_dir):
+            return False
+        wait = _env_secs('MEMGIT_AUTOSYNC_WAIT', SESSION_WAIT_SECS) if wait is None else wait
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            if _read_json(d / 'autosync-last.json').get('at') != before \
+                    and not (d / 'autosync.lock').exists():
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def sync_once(memgit_dir: Path) -> dict:
     """One pull-then-push of the current thread. Returns the outcome it recorded."""
     from ..repo import Repository
@@ -93,23 +173,24 @@ def sync_once(memgit_dir: Path) -> dict:
     from . import crypto
     from nacl.public import PrivateKey
 
-    repo = Repository(Path(memgit_dir))
-    cstate = CloudState(repo.path)
-    api_url = os.environ.get('MEMGIT_CLOUD_API') or cstate.creds.get('api_url') or DEFAULT_API_URL
-    api = ApiClient(api_url, cstate)
-    team_id, repo_id = cstate.link()
-    key_b64 = (cstate.creds.get('team_keys') or {}).get(team_id)
-    if key_b64:
-        key = crypto.b64u_decode(key_b64)
-    else:
-        priv = crypto.b64u_decode(cstate.creds['private_key'])
-        pub = bytes(PrivateKey(priv).public_key)
-        key = next(crypto.seal_open(t['wrapped_team_key'], pub, priv)
-                   for t in api.my_teams() if t['team']['id'] == team_id)
-    thread = repo.current_thread()
-    out = {'at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'thread': thread}
+    out = {'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     from .client import RefConflict
     try:
+        repo = Repository(Path(memgit_dir))
+        cstate = CloudState(repo.path)
+        api_url = os.environ.get('MEMGIT_CLOUD_API') or cstate.creds.get('api_url') or DEFAULT_API_URL
+        api = ApiClient(api_url, cstate)
+        team_id, repo_id = cstate.link()
+        key_b64 = (cstate.creds.get('team_keys') or {}).get(team_id)
+        if key_b64:
+            key = crypto.b64u_decode(key_b64)
+        else:
+            priv = crypto.b64u_decode(cstate.creds['private_key'])
+            pub = bytes(PrivateKey(priv).public_key)
+            key = next(crypto.seal_open(t['wrapped_team_key'], pub, priv)
+                       for t in api.my_teams() if t['team']['id'] == team_id)
+        thread = repo.current_thread()
+        out['thread'] = thread
         for attempt in range(3):
             try:
                 pulled, pushed = SyncEngine(repo, api, cstate, key, repo_id).sync(thread)
@@ -125,6 +206,12 @@ def sync_once(memgit_dir: Path) -> dict:
         # A lapsed plan answers 402 on push; pulls keep working. Record it so
         # `memgit cloud auto status` can say why memories stopped going out.
         out.update(ok=False, error=str(e))
+    except StopIteration:
+        out.update(ok=False, error='this account is no longer a member of the linked team')
+    except Exception as e:
+        # Offline, DNS, a key that no longer opens the team key. An unrecorded
+        # failure leaves the last success on show and reads keep retrying.
+        out.update(ok=False, error=f'{type(e).__name__}: {e}')
     (_cloud_dir(memgit_dir) / 'autosync-last.json').write_text(json.dumps(out))
     return out
 
