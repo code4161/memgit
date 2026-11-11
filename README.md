@@ -4,15 +4,71 @@
 
 <!-- mcp-name: dev.memgit/memgit -->
 
-# memgit — git for AI memory
+# memgit — one memory for your AI coding agents
 
-**Your AI assistants forget everything when the session ends. memgit fixes that.**
+**The same memory in every session, on every machine, in every tool. Versioned, so a wrong memory is one command to undo.**
 
-Version-controlled, cross-AI context that persists, diffs, rolls back, and syncs like code. Switch from Claude to Cursor to ChatGPT mid-project — your context is already there.
+Claude Code now remembers things on its own, on one machine. Its docs are plain about the limit: auto memory is machine-local and is not shared across machines or cloud environments. memgit is the layer on top. It imports what Claude Code already keeps and adds the three things built-in memory does not do:
+
+- **Every machine.** Your laptop, your desktop and a server hold the same memory, synced end-to-end encrypted.
+- **Every tool.** Claude Code, Cursor, Codex, Windsurf, Gemini CLI and any MCP host read and write one store.
+- **History.** Every change is a checkpoint. `memgit diff` shows what an agent changed and `memgit rollback` puts it back.
+
+![An agent overwrites a rule with something wrong; memgit diff shows the change and memgit rollback restores it](https://memgit.dev/demos/version-control.gif)
+
+*Unedited terminal recording, regenerated from the released package on every release.*
 
 [![PyPI](https://img.shields.io/pypi/v/memgit)](https://pypi.org/project/memgit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-431%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-691%20passing-brightgreen)](tests/)
+
+## Install
+
+**Claude Code** (two commands inside Claude Code, nothing else to set up):
+
+```
+/plugin marketplace add code4161/claude-plugins
+/plugin install memgit@memgit
+```
+
+The plugin starts the memory server, creates the store on first use and adds the hooks that bring memory in at session start and save what a session learns. It needs Node and Python 3.11+ on the machine.
+
+**Any other tool, or the full CLI:**
+
+```bash
+pip install memgit        # or: brew tap code4161/tap && brew install memgit
+memgit init               # creates the store, imports the memory Claude Code already keeps,
+                          # and offers to connect every AI tool it finds on this machine
+```
+
+That is the whole setup. Restart your AI tool: it now starts each session with your memory and saves what it learns. `memgit resume` shows exactly what it will see.
+
+**Any MCP host by config** (needs Python 3.11+ on PATH; the first run installs memgit into its own environment and creates the store):
+
+```json
+{ "mcpServers": { "memgit": { "command": "npx", "args": ["-y", "memgit-mcp"] } } }
+```
+
+Windows: `choco install memgit` (new versions can wait a few days in Chocolatey moderation; `pip install memgit` always has the latest).
+
+## The same memory on your other machines
+
+```bash
+memgit cloud signup       # on the first machine: one passphrase, then it syncs on its own
+memgit cloud login        # on every other machine
+```
+
+Every save goes up in the background and other machines' memories arrive at session start and while you work. The server stores ciphertext only; the passphrase never leaves your machine. Free for 14 days with no card, then $12 a month or $99 a year. The local engine, the store, the MCP server and every command are MIT and never gated, and a lapsed plan never locks your data: it stays on your machine, readable and exportable.
+
+## Check it yourself
+
+```bash
+memgit fsck                                   # every object verified by SHA-256
+memgit stats                                  # what your context costs with and without memgit, measured on your store
+memgit cloud auto status                      # whether anything leaves this machine, and when it last did
+```
+
+With no cloud login and no licence key, memgit talks to nothing.
 
 ---
 
@@ -103,54 +159,6 @@ grep -rl "database" ~/.claude/memgit-store/memories/
 git log --follow memories/no-db-mock.toon
 git diff HEAD~7 memories/
 ```
-
----
-
-## Install
-
-**Mac / Linux:**
-```bash
-pip install memgit
-```
-
-**Mac (Homebrew):**
-```bash
-brew tap code4161/tap && brew install memgit
-```
-
-**Windows:**
-```powershell
-choco install memgit
-# or
-pip install memgit
-```
-(The Chocolatey package is live on community.chocolatey.org; newly pushed versions can take a few days to clear moderation — `pip install memgit` always has the latest.)
-
-**Any AI tool config (needs Python 3.11+ on PATH; npx installs memgit into its own environment on first run and creates the store):**
-```json
-{ "mcpServers": { "memgit": { "command": "npx", "args": ["-y", "memgit-mcp"] } } }
-```
-
----
-
-## Quickstart (3 minutes)
-
-```bash
-# 1. Install and initialize
-pip install memgit
-memgit init               # auto-detects the best location, finds your existing
-                          # Claude Code memories, and offers to import them
-
-# 2. Register with your AI tools (interactive picker)
-memgit setup
-
-# 3. See your token savings
-memgit stats
-```
-
-`init` walks you through it — no paths to hunt down. (Importing later is one command with no arguments: `memgit sync` auto-finds `~/.claude/projects/*/memory`.)
-
-Restart your AI tool — it now searches your memory store at the start of every session.
 
 ---
 
@@ -295,10 +303,9 @@ memgit pro deactivate         # remove the key from this machine
 ### Sync between machines and with a team
 
 ```bash
-memgit cloud signup --email you@example.com   # 14-day trial; keys are made on this machine
-memgit cloud team create myteam
-memgit cloud link myteam/memory               # creates the cloud repo on first link
-memgit cloud auto on                          # every save syncs in the background from now on
+memgit cloud signup           # creates your account, a personal team and repo, links this store and turns sync on
+memgit cloud login            # on another machine: links to the same repo and turns sync on
+memgit cloud team invite personal   # a link for a teammate; they run memgit cloud team join <link>
 ```
 
 With autosync on, each save (including every `save_memory` your AI makes) starts one

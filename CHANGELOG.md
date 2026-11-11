@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-11-11
+
+The first minute. Read on 2026-11-11: no person outside the project had ever created a cloud account, `memgit init` ended on three more commands to discover, and every comparable tool installs from inside Claude Code in two commands.
+
+### Changed
+- **`memgit init` is the whole setup.** After creating the store and importing the memory Claude Code already keeps, it lists the AI tools found on the machine and connects them, and Claude Code's hooks, on one answer. It ends on what happens next and on `memgit cloud signup`. `--yes` answers for scripts, `--no-setup` only creates the store, and without a terminal it changes no tool's configuration.
+- **The Claude Code plugin installs itself.** `/plugin marketplace add code4161/claude-plugins` then `/plugin install memgit@memgit`: the plugin starts the server through `npx memgit-mcp`, which installs memgit and creates the store, and ships the hooks that bring memory in at session start and with each prompt. Before this it needed the CLI installed and configured first.
+- **The README opens with what built-in memory does not do** (every machine, every tool, history with rollback), an unedited recording, and the install commands in the first screen. The cloud walkthrough is two commands.
+
 ## [0.14.1] — 2026-11-11
 
 ### Fixed
