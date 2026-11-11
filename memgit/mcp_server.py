@@ -672,7 +672,11 @@ def run_server(store_path: Path | None = None) -> None:
             n_recent = int(arguments.get("recent", 10))
             ctx = repo.resume_context(checkpoints=n_ck, recent=n_recent,
                                       project=_detect_project())
-            return [TextContent(type="text", text=_format_resume_plain(ctx))]
+            from .cli import _sync_hint_for, _sync_hint_shown
+            hint = _sync_hint_for(repo, ctx)
+            text = _format_resume_plain(ctx)
+            _sync_hint_shown(repo, hint, text)
+            return [TextContent(type="text", text=text)]
 
         elif name == "search_memories":
             query = arguments.get("query", "")

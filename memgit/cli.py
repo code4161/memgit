@@ -730,9 +730,12 @@ def resume(checkpoints, recent, plain, fmt_json, project):
         print(_j.dumps(ctx, indent=2, default=str))
         return
 
+    hint = _sync_hint_for(repo, ctx)
+
     if plain:
         text = _format_resume_plain(ctx)
         print(text)
+        _sync_hint_shown(repo, hint, text)
         # Metrics: the session-start digest is the biggest recurring spend —
         # record its measured token cost (this is the hook path).
         try:
@@ -793,7 +796,50 @@ def resume(checkpoints, recent, plain, fmt_json, project):
         console.print(f'\n[yellow]maintenance:[/yellow] {ctx["maintenance"]}')
     if ctx.get('durability'):
         console.print(f'\n[red]durability:[/red] {ctx["durability"]}')
+    if ctx.get('sync_hint'):
+        console.print(f'\n[dim]{ctx["sync_hint"]}[/dim]', soft_wrap=True)
+        _sync_hint_shown(repo, hint, ctx['sync_hint'])
     console.print()
+
+
+def _sync_hint_for(repo, ctx: dict):
+    """Put the memgit cloud offer, if one is due, into the digest context.
+
+    Decided from local state only (see memgit/synchint.py). Returns the
+    (key, line) pair so the caller can mark it shown once it is printed.
+    """
+    try:
+        from .synchint import pending
+        hint = pending(repo.path, int(ctx.get('total_memories') or 0))
+    except Exception:
+        hint = None
+    if hint:
+        ctx['sync_hint'] = hint[1]
+    return hint
+
+
+def _sync_hint_shown(repo, hint, text: str) -> None:
+    """Mark the hint shown only when its line survived into what was printed:
+    a digest cut at its budget must not use up the one showing."""
+    if hint and hint[1] in text:
+        try:
+            from .synchint import mark_shown
+            mark_shown(repo.path, hint[0])
+        except Exception:
+            pass
+
+
+def _sync_hint_after(repo, event: str, to_stderr: bool = False) -> None:
+    """After an export or a backup: the offer, once, in that command's output.
+    Export writes the memory to stdout, so its hint goes to stderr and a pipe
+    receives exactly what it did before."""
+    try:
+        from .synchint import show_for_event
+        line = show_for_event(repo.path, len(repo.list()), event)
+    except Exception:
+        line = None
+    if line:
+        (err if to_stderr else console).print(f'[dim]{line}[/dim]', soft_wrap=True)
 
 
 #: Size at which Claude Code stops inlining hook output: above it the digest
@@ -1031,6 +1077,11 @@ def _render_resume_plain(ctx: dict) -> str:
                  'stale one against the files; check work-in-flight and the last '
                  'checkpoints before assuming state. Anything deeper: '
                  'search_memories("<topic from the index above>").)')
+    # The memgit cloud offer, shown at most once per trigger and only while
+    # the store is not connected to memgit cloud (memgit/synchint.py).
+    if ctx.get('sync_hint'):
+        lines.append('')
+        lines.append(ctx['sync_hint'])
     return '\n'.join(lines)
 
 
@@ -1541,6 +1592,7 @@ def export(slug, fmt):
         print(mnemonic_to_markdown(m))
     else:
         print(serialize_mnemonic(m))
+    _sync_hint_after(repo, 'export', to_stderr=True)
 
 
 # ── fsck ──────────────────────────────────────────────────────────────────────
@@ -2299,6 +2351,7 @@ def backup_now(to_path):
     ok, msg = run_backup(repo, dest)
     if ok:
         console.print(f'[green]backup ok[/green] — {msg}')
+        _sync_hint_after(repo, 'backup')
     else:
         err.print(f'[red]{msg}[/red]')
         sys.exit(1)
@@ -3118,6 +3171,7 @@ def git_export():
     count = len(list((store_root / 'memories').glob('*.toon')))
     console.print(f'[green]export[/green]  {count} memories → {store_root / "memories"}')
     console.print(f'[dim]Grep them: grep -rl "your query" {store_root / "memories"}[/dim]')
+    _sync_hint_after(repo, 'export')
 
 
 @git.command('push')
@@ -3977,11 +4031,63 @@ def pro_deactivate():
         console.print('[dim]no licence key was stored[/dim]')
 
 
+# ── cloud offer switch ────────────────────────────────────────────────────────
+
+@click.group('hint', invoke_without_command=True)
+@click.pass_context
+def _hint_group(ctx):
+    """The one-line memgit cloud offer in the session digest: status, on, off.
+
+    It is decided from this store alone and sends nothing anywhere. It never
+    shows once this store is logged in or linked, or with MEMGIT_NO_SYNC_HINT=1.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(_hint_status)
+
+
+@_hint_group.command('status')
+def _hint_status():
+    """Whether the offer can show, and which ones already have."""
+    repo = _require_repo()
+    from .synchint import read_state, cloud_connected, _off_by_env
+    data = read_state(repo.path)
+    if _off_by_env():
+        why = 'off (MEMGIT_NO_SYNC_HINT is set)'
+    elif data.get('off'):
+        why = 'off (memgit cloud hint on turns it back on)'
+    elif cloud_connected(repo.path):
+        why = 'not shown: this store is connected to memgit cloud'
+    else:
+        why = 'on'
+    console.print(f'cloud hint: {why}')
+    shown = ', '.join(data.get('shown') or []) or 'none'
+    console.print(f'[dim]already shown: {shown}[/dim]')
+
+
+@_hint_group.command('off')
+def _hint_off():
+    """Never show the memgit cloud offer for this store."""
+    repo = _require_repo()
+    from .synchint import set_off
+    set_off(repo.path, True)
+    console.print('[yellow]cloud hint off[/yellow] for this store')
+
+
+@_hint_group.command('on')
+def _hint_on():
+    """Allow the offer again (each trigger still shows at most once)."""
+    repo = _require_repo()
+    from .synchint import set_off
+    set_off(repo.path, False)
+    console.print('[green]cloud hint on[/green] for this store')
+
+
 # ── cloud (E2E-encrypted team sync — optional extra) ──────────────────────────
 
 try:
     from .cloud.commands import cloud as _cloud_group
     cli.add_command(_cloud_group)
+    _cloud_group.add_command(_hint_group)
 except Exception:
     # extras missing or broken — plain memgit must keep working untouched
     @cli.group()

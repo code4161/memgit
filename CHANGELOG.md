@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **memgit cloud is offered at the moment it would help, decided on this machine.** One line, at the end of the session digest (memgit resume, the MCP resume_session tool and the SessionStart hook) or in the output of the command that caused it, when the store reaches 50 and again 250 memories, when the store is opened on a second machine (a hashed hostname is recorded the first time), and after memgit export, memgit git export or memgit backup now. For example: "214 memories are on this machine. memgit cloud signup puts them on your other machines too (14 days free, no card)." Each trigger shows at most once per store, remembered in .memgit/sync-hint.json, and nothing is sent anywhere to decide it. It never shows once the store is logged in to memgit cloud or linked. Turn it off with memgit cloud hint off (memgit cloud hint on and memgit cloud hint status alongside) or MEMGIT_NO_SYNC_HINT=1. The export hint goes to stderr, so a piped export is unchanged.
+
 ## [0.14.2] — 2026-11-11
 
 The first minute. Read on 2026-11-11: no person outside the project had ever created a cloud account, `memgit init` ended on three more commands to discover, and every comparable tool installs from inside Claude Code in two commands.

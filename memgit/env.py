@@ -67,6 +67,11 @@ KNOWN_ENV_VARS: dict[str, str] = {
         'background fetch from memgit cloud (default 300). 0 turns '
         'read-triggered fetching off; saves and session starts still sync.'
     ),
+    'MEMGIT_NO_SYNC_HINT': (
+        'Set to 1/true/yes to never show the one-line memgit cloud offer in the '
+        'session digest and after export or backup. The offer is decided from '
+        'the store alone and sends nothing.'
+    ),
     'MEMGIT_AUTOSYNC_WAIT': (
         'Seconds a session start waits for the fetch from memgit cloud before '
         'rendering the digest (default 3). 0 never waits.'
