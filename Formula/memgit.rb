@@ -3,8 +3,8 @@ class Memgit < Formula
 
   desc "Git for AI memory — version-controlled context persistence across Claude, GPT, Cursor, Windsurf and more"
   homepage "https://memgit.dev"
-  url "https://files.pythonhosted.org/packages/source/m/memgit/memgit-0.14.0.tar.gz"
-  sha256 "54ae1a315c60fc7f7749429bfc0801ab2c9ed8c227b72ea178b9cc6b52e132a3"
+  url "https://files.pythonhosted.org/packages/source/m/memgit/memgit-0.14.1.tar.gz"
+  sha256 "3b8b3b8a16517bf4463ed5cf4da2e01b4851f579351988323517da560ae950b8"
   license "MIT"
 
   depends_on "python@3.12"
