@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.3] — 2026-11-11
 
 ### Changed
 - **The cloud trial starts at the second machine.** Each store now makes a random device id once (kept in .memgit/cloud/device-id, which logout leaves in place) and sends it on signup, login and token refresh. The server starts the 14-day trial when a second machine connects, when a teammate joins a team you own, or 30 days after signup, whichever comes first, because sync has nothing to do on one machine. `memgit cloud signup` and `memgit cloud whoami` say which of these is still to come and the date by which the trial starts anyway; accounts that already have an end date show it as before.
