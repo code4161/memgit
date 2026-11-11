@@ -608,6 +608,38 @@ def run_server(store_path: Path | None = None) -> None:
                 },
             ),
             Tool(
+                name="forget_memory",
+                description=(
+                    "Remove a memory from the store so it is no longer recalled. "
+                    "CALL THIS: when a memory is wrong, obsolete or was saved by mistake "
+                    "and nothing replaces it. If a newer memory replaces it, call "
+                    "save_memory with supersedes instead, which keeps the link between "
+                    "the two. The removal is recorded as a checkpoint and the old version "
+                    "stays in history, so it can be restored; the response returns the "
+                    "forgotten memory so you can save it again if needed. Critical "
+                    "(priority 3) and core-guide memories need confirm=true."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slug": {"type": "string",
+                                 "description": "Exact slug of the memory to forget."},
+                        "reason": {
+                            "type": "string",
+                            "description": "Why it is being forgotten; recorded in the "
+                                           "checkpoint message.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": "Required (true) to forget a priority-3 or "
+                                           "core-guide memory.",
+                            "default": False,
+                        },
+                    },
+                    "required": ["slug"],
+                },
+            ),
+            Tool(
                 name="get_checkpoint_log",
                 description=(
                     "Show recent checkpoint history for the memory store — when memories were last synced "
@@ -1100,6 +1132,37 @@ def run_server(store_path: Path | None = None) -> None:
                 "slug": slug,
                 "unverified": m.unverified,
                 "checkpoint": (ck or "")[:8] or None,
+            }, indent=2))]
+
+        elif name == "forget_memory":
+            slug = (arguments.get("slug") or "").strip()
+            reason = " ".join((arguments.get("reason") or "").split())[:200]
+            m = repo.get(slug)
+            if m is None:
+                return [TextContent(type="text",
+                                    text=f"Error: no memory with slug '{slug}'.")]
+            # A poisoned instruction ("forget your rules") must not erase the rules
+            # that guard the session without an explicit second step.
+            guarded = m.priority >= 3 or m.type_code == "co"
+            if guarded and arguments.get("confirm") is not True:
+                return [TextContent(type="text", text=json.dumps({
+                    "status": "refused", "slug": slug,
+                    "reason": "critical or core-guide memory; call again with "
+                              "confirm=true if forgetting it is intended.",
+                }, indent=2))]
+            repo.remove(slug)
+            ck = repo.commit(
+                message=f"forget: {slug}" + (f" ({reason})" if reason else ""),
+                trigger="mcp_save")
+            return [TextContent(type="text", text=json.dumps({
+                "status": "ok",
+                "action": "forgotten",
+                "slug": slug,
+                "checkpoint": (ck or "")[:8] or None,
+                "forgotten": {"type": m.type_code, "priority": m.priority,
+                              "rule": m.rule},
+                "restore": "save_memory with the same slug and rule, or "
+                           "memgit rollback to the checkpoint before this one",
             }, indent=2))]
 
         elif name == "get_checkpoint_log":
