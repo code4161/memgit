@@ -5,6 +5,8 @@ Raises CloudError with a human-readable message on any API failure; callers
 """
 from __future__ import annotations
 
+import time
+
 import httpx
 
 DEFAULT_API_URL = 'https://api.memgit.dev'
@@ -63,9 +65,35 @@ class ApiClient:
             raise CloudError(f'rate limited — retry in {retry}s')
         raise CloudError(f'API error {r.status_code}: {detail}')
 
+    def _adopt_saved_tokens(self) -> bool:
+        """Take the tokens another process of this store has just saved.
+
+        A refresh token is single use. The background sync worker and a
+        foreground command can both find the access token expired and both
+        present the same refresh token; the server rotates it for the first
+        and answers 401 to the second, which used to report "session expired"
+        on a session that was fine (measured 2026-11-11).
+        """
+        if not self._state:
+            return False
+        saved = self._state.creds
+        if saved.get('refresh') and saved.get('refresh') != self.refresh:
+            self.access, self.refresh = saved.get('access'), saved['refresh']
+            return True
+        return False
+
     def _do_refresh(self) -> None:
+        # Someone may have refreshed between our reading the file and now.
+        if self._adopt_saved_tokens():
+            return
         r = self._http.post('/v1/auth/refresh', json={'refresh': self.refresh})
         if r.status_code != 200:
+            # Lost a race for the same refresh token: the winner writes its
+            # tokens within moments. Wait briefly for them before giving up.
+            for _ in range(20):
+                if self._adopt_saved_tokens():
+                    return
+                time.sleep(0.25)
             raise CloudError('session expired — run: memgit cloud login')
         body = r.json()
         self.access, self.refresh = body['access'], body['refresh']

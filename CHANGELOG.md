@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-11-11
+
+### Fixed
+- **Two processes of one store no longer log each other out.** A refresh token is single use. A commit starts the background sync worker; a command typed at the same moment found the same access token expired and presented the same refresh token, and the slower of the two reported "session expired — run: memgit cloud login" on a session that was fine (measured on the live service, minutes after 0.14.0). A client that is about to refresh, or has just been refused, now takes the tokens the other process saved, waiting up to five seconds for them.
+
 ## [0.14.0] — 2026-11-11
 
 Cloud sync no longer needs anyone to type a command, and two machines now end up with the same memory. Measured 2026-11-11 against the live service with two stores: after both edited one memory in the same minute, every sync on each side made a new merge checkpoint, each push replaced the other machine's head, and the two stores disagreed about that memory for good.
