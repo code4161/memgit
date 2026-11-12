@@ -442,6 +442,11 @@ class Repository:
         if not (m.rule or '').strip():
             raise ValueError(f'empty rule for {m.slug!r} — a memory with no '
                              'fact is unrecallable')
+        # Record the git repository the memory was saved in, so the same
+        # project cloned at another path, on another machine or by a teammate
+        # finds it (project.py, "Repository identity").
+        from .project import stamp_repo
+        stamp_repo(m)
         with self._lock():
             sha = self.store.write_mnemonic(m)
             index = self.get_index()
@@ -548,6 +553,8 @@ class Repository:
         # which covers both a missing file and one that has fallen behind.
         if missed or (cold and not self._snapshot_path().exists()):
             self._write_snapshot(result)
+        from .project import learn_repos
+        learn_repos(result)
         return result
 
     # ── Commit ────────────────────────────────────────────────────────────────
@@ -1255,6 +1262,14 @@ class Repository:
             'thread': thread,
             'project': project,
             'project_is_new': project_is_new,
+            # When this label holds nothing, the labels that do: the same
+            # repository checked out at another path shows up here, and the
+            # digest must not tell an agent to rebuild what is already stored.
+            'other_projects': (sorted(
+                ((p, n) for p, n in __import__('collections').Counter(
+                    m.project for m in mnemonics
+                    if m.project and m.project != '_unknown').items()),
+                key=lambda kv: -kv[1])[:5] if project_is_new else []),
             'head': (head or '')[:8],
             'checkpoint_count': count,
             'history_since': first_ts,
@@ -1269,7 +1284,30 @@ class Repository:
             'core_missing': core_missing,
             'maintenance': self.maintenance_hint(count),
             'durability': self._durability_hint(),
+            'cloud_sync': self._cloud_sync_problem(),
         }
+
+    def _cloud_sync_problem(self) -> Optional[str]:
+        """One line when this store is set to sync and its last sync failed.
+
+        A failed background sync is recorded in autosync-last.json and was only
+        visible to someone who ran `memgit cloud auto status`. The agent kept
+        saving into a store whose memories no longer left the machine (a lapsed
+        plan answers 402 on push), and nothing it reads said so.
+        """
+        import json as _json
+        d = self.path / 'cloud'
+        try:
+            state = _json.loads((d / 'state.json').read_text())
+            last = _json.loads((d / 'autosync-last.json').read_text())
+        except (OSError, ValueError):
+            return None
+        if not state.get('autosync') or last.get('ok') is not False:
+            return None
+        err = ' '.join(str(last.get('error') or 'unknown error').split())[:300]
+        return (f'the last cloud sync ({last.get("at", "?")}) failed: {err}. Memories saved '
+                'here are not reaching other machines or the team until it succeeds; '
+                '`memgit cloud sync` shows the error and retries.')
 
     def _durability_hint(self) -> Optional[str]:
         """Backup warning for the digest, or None while safe. Never raises."""

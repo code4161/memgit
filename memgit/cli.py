@@ -1047,15 +1047,31 @@ def _render_resume_plain(ctx: dict) -> str:
     if ctx.get('durability'):
         lines.append('')
         lines.append(f'## Durability\n- {ctx["durability"]}')
+    if ctx.get('cloud_sync'):
+        lines.append('')
+        lines.append(f'## Cloud sync is failing\n- {ctx["cloud_sync"]}')
     if ctx.get('project_is_new'):
         lines.append('')
-        lines.append(
-            f'## This project has no memories yet ({ctx["project"]})\n'
-            '- memgit was adopted mid-project: nothing above is specific to this '
-            'workspace. Bootstrap it once — run `memgit onboard` for a repo '
-            'digest + seeding brief, then save 10-20 durable facts '
-            '(purpose, architecture, conventions, state, gotchas) via save_memory.'
-        )
+        others = ctx.get('other_projects') or []
+        if others:
+            listed = ', '.join(f'{p} ({n})' for p, n in others)
+            lines.append(
+                f'## No memories under this label yet ({ctx["project"]})\n'
+                f'- This store holds memories under other labels: {listed}. If one of '
+                'them is this project (the same repository checked out at another path, '
+                'on another machine, or by a teammate), search it with '
+                'search_memories(project="<label>") and set MEMGIT_PROJECT=<label> for '
+                'this workspace; do not re-create those memories. If none is, bootstrap '
+                'this project once with `memgit onboard`.'
+            )
+        else:
+            lines.append(
+                f'## This project has no memories yet ({ctx["project"]})\n'
+                '- memgit was adopted mid-project: nothing above is specific to this '
+                'workspace. Bootstrap it once — run `memgit onboard` for a repo '
+                'digest + seeding brief, then save 10-20 durable facts '
+                '(purpose, architecture, conventions, state, gotchas) via save_memory.'
+            )
     if ctx.get('core_missing'):
         lines.append('')
         lines.append(
@@ -1753,8 +1769,20 @@ def search(query, top, toon, fmt_json, type_filter, project_filter,
     if not results:
         console.print('[dim]No results.[/dim]')
         if scope:
-            console.print(f'[dim](scoped to {scope} + global — '
-                          'try --all-projects for the whole store)[/dim]')
+            elsewhere = bm25_score(query, mnemonics, top_k=50, usage=read_usage(repo))
+            if elsewhere:
+                from collections import Counter
+                counts = Counter(r.mnemonic.project or '(global)' for r in elsewhere)
+                listed = ', '.join(f'{p} ({n})' for p, n in counts.most_common(5))
+                console.print(f'[yellow]·[/yellow] {len(elsewhere)} match'
+                              f'{"es" if len(elsewhere) != 1 else ""} under other labels: '
+                              f'{listed}')
+                console.print(f'  [dim]scoped to {scope}. Search them: --all-projects or '
+                              f'--project <label>. If one is this project at another path, '
+                              f'set MEMGIT_PROJECT=<label>.[/dim]')
+            else:
+                console.print(f'[dim](scoped to {scope} + global — '
+                              'try --all-projects for the whole store)[/dim]')
         return
 
     if fmt_json:

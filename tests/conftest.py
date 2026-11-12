@@ -16,3 +16,8 @@ def _isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv('MEMGIT_STORE', str(tmp_path / 'isolated-store'))
     monkeypatch.delenv('MEMGIT_PROJECT', raising=False)
     monkeypatch.delenv('CLAUDE_PROJECT_DIR', raising=False)
+    # Repository identities are remembered per process (project.py); a label
+    # learned by one test must never join labels in another.
+    from memgit import project
+    project._learned_repos.clear()
+    project._detected_repos.clear()

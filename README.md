@@ -307,8 +307,15 @@ memgit pro deactivate         # remove the key from this machine
 ```bash
 memgit cloud signup           # creates your account, a personal team and repo, links this store and turns sync on
 memgit cloud login            # on another machine: links to the same repo and turns sync on
-memgit cloud team invite personal   # a link for a teammate; they run memgit cloud team join <link>
+memgit cloud team invite personal   # prints the one command a teammate runs:
+                                    #   memgit cloud signup --invite '<link>'
 ```
+
+A teammate who joins by invite is linked to the team's memory, not to a new
+personal repo of their own. The same repository cloned at a different path, on
+another machine or by a teammate shares its memories: inside a git repository a
+project is identified by its remote as well as by its folder (see "How the project
+label is decided" below).
 
 With autosync on, each save (including every `save_memory` your AI makes) starts one
 background pull-then-push and returns immediately, and each session start pulls what other
@@ -547,6 +554,23 @@ answer that is missing things. `memgit doctor` reports splits, stranded labels
 and the **save landing rate** by default; `memgit doctor --audit` adds every
 row. A repair heals toward the label whose **directory exists**, never toward
 the one holding more memories.
+
+**The same repository at another path is the same project.** A label is a path,
+so `~/code/acme-api` on one machine and `~/work/acme-api` on a teammate's are two
+labels. Inside a git repository each save also records the repository: its
+remote (origin first), normalized so that SSH and HTTPS clones agree, plus the
+folder inside the checkout (`github.com/acme/api`, `github.com/acme/api/src`). Two
+labels are then the same project when their memories name the same place in the
+same repository, and family when one is a folder inside the other, exactly as
+labels nest. Folders of a monorepo stay separate projects, and a home directory
+that is itself a dotfiles repository does not merge everything under it. A label
+learns its repository from any one of its memories, so a project saved before
+this existed joins up on its next save from inside the checkout. The repository
+is stored in the memory's `REPO` field, which older memgit versions carry
+through unchanged. Where no repository applies (a server workspace that is not a
+checkout), set `MEMGIT_PROJECT` to the label the memories carry; when a search
+or the session digest finds nothing under the current label, it names the labels
+that do match instead of advising a fresh start.
 
 When none of them yields a label — running from `$HOME`, for instance — a write
 is **quarantined** under `_unknown` rather than filed globally, and

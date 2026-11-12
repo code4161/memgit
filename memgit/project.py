@@ -89,6 +89,190 @@ def project_label_from_path(path: Path,
     return munged.lstrip('-') or None
 
 
+# ── Repository identity ──────────────────────────────────────────────────────
+#
+# A label is a path, so it names a CHECKOUT, not a project. Measured 2026-11-12
+# on 0.15.0 against a local cloud API: a teammate whose clone sat at
+# ~/work/acme-api, the same user's second machine at ~/src/api and a server at
+# /srv/acme-api all held the synced memories saved from ~/code/acme-api, and
+# every default search on all three answered "No results" and told the agent to
+# bootstrap the project from scratch. Sync worked; scoping hid what it delivered.
+#
+# The repository's remote URL is the same on every clone, so it is what joins
+# those labels. The identity is the remote plus the path inside the checkout
+# (github.com/acme/api, github.com/acme/api/src): a monorepo's sibling folders
+# stay separate projects, as their labels always were, and a home directory
+# that is itself a dotfiles repository does not fold every project under it
+# into one. Identities match the way labels do, exactly or as an ancestor.
+# Each save inside a git repo records it on the memory as the REPO field (kept in Mnemonic.extra, which every memgit since 0.11 carries
+# through unchanged, so older readers never strip it). Labels are then the same
+# project when any memory under them names the same repository. A label learns
+# its repository from ANY one of its memories, so an existing project joins up
+# on its next save from inside the checkout; no relabel, no rewrite.
+
+REPO_FIELD = 'REPO'
+
+#: label (normalized) -> repository ids, learned from the store's memories.
+_learned_repos: dict[str, set] = {}
+#: label (normalized) -> repository ids, seen by detection in this process.
+_detected_repos: dict[str, set] = {}
+
+
+def _git_dir(start: Path) -> Optional[tuple]:
+    """(git directory holding the config, checkout root, start resolved) for
+    the checkout containing start, or None."""
+    try:
+        current = start.expanduser().resolve()
+    except OSError:
+        return None
+    for d in [current, *current.parents]:
+        dot = d / '.git'
+        try:
+            if dot.is_dir():
+                return dot, d, current
+            if dot.is_file():   # worktree or submodule: "gitdir: <path>"
+                text = dot.read_text(errors='replace').strip()
+                if text.startswith('gitdir:'):
+                    gd = Path(text[7:].strip())
+                    gd = gd if gd.is_absolute() else (d / gd)
+                    common = gd / 'commondir'
+                    if common.is_file():
+                        c = Path(common.read_text().strip())
+                        return (c if c.is_absolute() else gd / c).resolve(), d, current
+                    return gd.resolve(), d, current
+                return None
+        except OSError:
+            return None
+    return None
+
+
+def normalize_remote(url: Optional[str]) -> Optional[str]:
+    """host/owner/name for a git remote URL, the same for every way of cloning it.
+
+        git@github.com:Acme/API.git          -> github.com/acme/api
+        https://user@github.com/acme/api     -> github.com/acme/api
+        ssh://git@github.com:22/acme/api.git -> github.com/acme/api
+
+    A local path or file:// remote names a directory, not a shared repository,
+    so it gives no identity (None).
+    """
+    if not url:
+        return None
+    u = url.strip()
+    if not u or u.startswith(('/', '.', '~', 'file:')):
+        return None
+    m = re.match(r'^[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d+)?/(.+)$', u, re.I)
+    if m:
+        host, path = m.group(1), m.group(2)
+    else:
+        m = re.match(r'^(?:[^@/]+@)?([^:/]+):(.+)$', u)   # scp form git@host:path
+        if not m or len(m.group(1)) == 1:                 # C:\path is not a host
+            return None
+        host, path = m.group(1), m.group(2)
+    path = path.strip('/')
+    if path.endswith('.git'):
+        path = path[:-4]
+    path = path.strip('/')
+    if not path:
+        return None
+    return f'{host}/{path}'.lower()
+
+
+def repo_identity(path: Optional[Path]) -> Optional[str]:
+    """Identity of path within its git repository: the origin remote (else the
+    first remote), normalized, plus the path inside the checkout. None outside
+    a repository or without a remote. Reads .git/config directly: this runs on
+    every recall, and a git subprocess there would cost more than the search."""
+    if path is None:
+        return None
+    found = _git_dir(Path(path))
+    if found is None:
+        return None
+    gd, top, here = found
+    try:
+        text = (gd / 'config').read_text(errors='replace')
+    except OSError:
+        return None
+    remotes: dict[str, str] = {}
+    section = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith('['):
+            m = re.match(r'\[remote\s+"([^"]+)"\]', s)
+            section = m.group(1) if m else None
+        elif section and '=' in s:
+            k, v = s.split('=', 1)
+            if k.strip().lower() == 'url' and section not in remotes:
+                remotes[section] = v.strip()
+    for name in (['origin'] + [r for r in remotes if r != 'origin']):
+        ident = normalize_remote(remotes.get(name))
+        if ident:
+            try:
+                rel = here.relative_to(top).as_posix()
+            except ValueError:
+                rel = '.'
+            return ident if rel in ('', '.') else f'{ident}/{rel}'
+    return None
+
+
+def note_repo(label: Optional[str], repo: Optional[str]) -> None:
+    """Record that detection found `label` inside repository `repo`."""
+    if label and repo and label != UNKNOWN_PROJECT:
+        _detected_repos.setdefault(normalize_label(label), set()).add(repo)
+
+
+def learn_repos(mnemonics) -> None:
+    """Rebuild label -> repository identities from a store's memories."""
+    learned: dict[str, set] = {}
+    for m in mnemonics:
+        repo = (getattr(m, 'extra', None) or {}).get(REPO_FIELD)
+        if repo and m.project and m.project != UNKNOWN_PROJECT:
+            learned.setdefault(normalize_label(m.project), set()).add(repo)
+    _learned_repos.clear()
+    _learned_repos.update(learned)
+
+
+def repos_of(label: Optional[str]) -> set:
+    if not label or label == UNKNOWN_PROJECT:
+        return set()
+    key = normalize_label(label)
+    return _learned_repos.get(key, set()) | _detected_repos.get(key, set())
+
+
+def stamp_repo(m) -> None:
+    """Record the repository on a memory being saved, when its label was
+    detected inside exactly one repository. Explicit other-project saves and
+    globals are left alone: only the checkout we are standing in is known."""
+    if not m.project or m.project == UNKNOWN_PROJECT:
+        return
+    if (m.extra or {}).get(REPO_FIELD):
+        return
+    repos = _detected_repos.get(normalize_label(m.project), set())
+    if len(repos) == 1:
+        m.extra = dict(m.extra or {})
+        m.extra[REPO_FIELD] = next(iter(repos))
+
+
+def repo_relation(a: Optional[str], b: Optional[str]) -> int:
+    """2 when two labels are the same place in the same repository (different
+    checkouts of it), 1 when one is a folder inside the other, else 0."""
+    ra, rb = repos_of(a), repos_of(b)
+    if not ra or not rb:
+        return 0
+    if ra & rb:
+        return 2
+    for x in ra:
+        for y in rb:
+            if x.startswith(y + '/') or y.startswith(x + '/'):
+                return 1
+    return 0
+
+
+def same_repository(a: Optional[str], b: Optional[str]) -> bool:
+    """True when two labels are the same place in the same repository."""
+    return repo_relation(a, b) == 2
+
+
 def project_label_from_munged(munged_name: str) -> Optional[str]:
     """Derive a project label from a Claude Code projects/ dir name.
 
@@ -120,10 +304,12 @@ def same_project_family(a: Optional[str], b: Optional[str]) -> bool:
         return False
     if a == UNKNOWN_PROJECT or b == UNKNOWN_PROJECT:
         return False
-    a, b = normalize_label(a), normalize_label(b)
-    if a == b:
+    na, nb = normalize_label(a), normalize_label(b)
+    if na == nb:
         return True
-    return a.startswith(b + '-') or b.startswith(a + '-')
+    if na.startswith(nb + '-') or nb.startswith(na + '-'):
+        return True
+    return repo_relation(a, b) >= 1
 
 
 def project_affinity(memory_project: Optional[str],
@@ -142,6 +328,8 @@ def project_affinity(memory_project: Optional[str],
         return 0
     if normalize_label(memory_project) == normalize_label(current):
         return 2
+    if same_repository(memory_project, current):
+        return 2   # the same repository in another checkout is this project
     if same_project_family(memory_project, current):
         return 1
     return 0
@@ -166,19 +354,25 @@ def detect_project(cwd: Optional[Path] = None) -> Optional[str]:
     env = os.environ.get('MEMGIT_PROJECT', '').strip()
     if env:
         return env
+    candidates = []
     if cwd is not None:
-        label = project_label_from_path(Path(cwd))
-        if label:
-            return label
+        candidates.append(Path(cwd))
     claude_dir = os.environ.get('CLAUDE_PROJECT_DIR', '').strip()
     if claude_dir:
-        label = project_label_from_path(Path(claude_dir))
-        if label:
-            return label
+        candidates.append(Path(claude_dir))
     try:
-        return project_label_from_path(Path.cwd())
+        candidates.append(Path.cwd())
     except OSError:
-        return None
+        pass
+    for path in candidates:
+        label = project_label_from_path(path)
+        if label:
+            # The checkout's repository joins this label to every other clone
+            # of it (see "Repository identity" above). A forced MEMGIT_PROJECT
+            # is not tied to the cwd's repository, so only derived labels are.
+            note_repo(label, repo_identity(path))
+            return label
+    return None
 
 
 def canonical_project(label: Optional[str], known) -> Optional[str]:

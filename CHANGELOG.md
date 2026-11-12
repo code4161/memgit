@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+Read on 2026-11-12 by walking a new account, a teammate, a second machine and a server through memgit cloud against a local API: sync delivered every memory, and the teammate, the second machine and the server could not find any of them.
+
+### Fixed
+- **The same repository at another path is the same project.** A project label is the folder path, so a teammate at ~/work/acme-api, the same user's second machine at ~/src/api and a server at /srv/acme-api each had their own label, and every default search answered "No results" for memories sitting in their store. Each save inside a git repository now records the repository (normalized remote plus the folder inside the checkout) in the memory's REPO field, and labels that name the same place in the same repository are one project; a folder inside it is family, as with labels. Monorepo folders stay separate and a dotfiles home does not merge its projects. Older versions carry the field through unchanged, and a memory without it serializes exactly as before.
+- **Joining a team links to the team's memory.** Every new account gets a team called "personal", so a teammate who signed up and then joined an invite held two, and memgit cloud link personal/memory linked them to their own empty repo while every sync said "up-to-date". An ambiguous team name is now refused with the choices, a team can be named by its id prefix, memgit cloud signup --invite <link> (and login --invite) joins and links in one command without creating a personal team, memgit cloud team join links a store that is not linked yet, and memgit cloud team invite prints the command for the teammate.
+- **No traceback from a cloud command.** A refused request now ends in one line; signing up with an email that already has an account says to log in.
+
+### Changed
+- **An empty search says what the store does hold.** When nothing matches under the current label but other labels do, the MCP search returns those matches with their labels and says how to search them (project=<label>, all_projects, MEMGIT_PROJECT) instead of telling the agent to bootstrap the project from scratch. memgit search and the session digest do the same; the bootstrap advice remains for a store that truly holds nothing.
+- **The session digest says when cloud sync is failing.** A failed background sync (a lapsed plan, an expired login, no network) was recorded only for memgit cloud auto status; the agent kept saving into a store whose memories no longer left the machine. The digest now carries a "Cloud sync is failing" line with the error.
+
 ## [0.15.0] — 2026-11-12
 
 ### Added

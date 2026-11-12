@@ -44,7 +44,11 @@ _SERVER_DESCRIPTION = (
     "or project=<label> to hard-filter one). Saves default to the current project; pass "
     "project=\"\" for a deliberately-global memory — a save whose project can't be detected is "
     "quarantined under '_unknown' until relabeled (`memgit doctor --relabel`). "
-    "If the current project has NO memories yet (adopted mid-project), bootstrap it: "
+    "Inside a git repository the project is also identified by its remote, so the same "
+    "repository cloned at another path, on another machine or by a teammate shares its memories. "
+    "If a search or resume says this label holds nothing but names other labels that match, "
+    "those may be this project: search them (project=<label>) rather than re-creating them. "
+    "Only when the store truly has nothing for this project, bootstrap it: "
     "extract 10-20 durable facts from README/CLAUDE.md/docs/git history and save_memory "
     "each — `memgit onboard` prints the full brief. "
     "(4) memgit is cross-tool: memories saved here are also available in Cursor, Windsurf, GPT, and Gemini. "
@@ -745,6 +749,30 @@ def run_server(store_path: Path | None = None) -> None:
             if not results:
                 from .project import same_project_family
                 text = "No results found."
+                # A scoped search that finds nothing must say what the rest of
+                # the store holds. Measured 2026-11-12: a reviewer agent on a
+                # server got this answer to 201 of 201 searches while the store
+                # held 607 memories for its project under another label, and
+                # the advice below told it to rebuild them from scratch.
+                elsewhere = []
+                if scope:
+                    elsewhere = bm25_score(query, mnemonics, top_k=min(top_k, 5),
+                                           usage=read_usage(repo))
+                if elsewhere:
+                    labels = sorted({r.mnemonic.project or '(global)' for r in elsewhere})
+                    text = (
+                        f"No results in project '{current_project}'. The store has "
+                        f"{len(elsewhere)} match{'es' if len(elsewhere) != 1 else ''} "
+                        f"saved under {', '.join(repr(l) for l in labels)}, shown below. "
+                        "If those are this project (the same repository checked out at "
+                        "another path, or a server), pass all_projects=true or "
+                        "project=<label> to search them, and set MEMGIT_PROJECT=<label> "
+                        "in this MCP server's environment so every search does. Do not "
+                        "re-create them.\n\n"
+                        + json.dumps([dict(_mnem_to_dict(r.mnemonic, r.score),
+                                           project=r.mnemonic.project)
+                                      for r in elsewhere], indent=2))
+                    return [TextContent(type="text", text=text)]
                 # Fresh-adoption nudge: this project has nothing saved at all
                 # (nothing in its project tree — subdirs and parents count).
                 if current_project and not any(
