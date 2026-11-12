@@ -34,6 +34,9 @@ COUNT_THRESHOLDS = (50, 250)
 
 OFFER = 'memgit cloud signup'
 TERMS = '14 days free, no card'
+#: The opt-in email sequence, offered beside the sync line. Nothing is sent unless the
+#: user runs the command with their address.
+TIPS = 'Setup tips by email: memgit tips <your email>.'
 
 
 def _off_by_env() -> bool:
@@ -107,6 +110,10 @@ def _plural(n: int) -> str:
 
 
 def _line(key: str, count: int) -> str:
+    return f'{_offer(key, count)} {TIPS}'
+
+
+def _offer(key: str, count: int) -> str:
     if key == 'machine':
         return (f'This store has been opened on two machines. {OFFER} keeps '
                 f'each machine\'s memories in step on its own ({TERMS}).')

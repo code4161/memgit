@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- memgit tips EMAIL asks memgit.dev for four short setup emails over ten days. It sends the address and nothing else; memgit.dev emails a confirmation link first, and every tip has a one-click unsubscribe link. MEMGIT_TIPS_URL points it elsewhere for tests.
+- The one-line memgit cloud offer now ends with the same command for setup tips.
+
 ## [0.16.0] - 2026-11-12
 
 Read on 2026-11-12 by walking a new account, a teammate, a second machine and a server through memgit cloud against a local API: sync delivered every memory, and the teammate, the second machine and the server could not find any of them. A second walk then checked every feature across two machines and across a teammate's account: all 26 checks pass (priority and critical rules, the core guide, trackers, supersedes, unverified memories, triggers and the action gate, forget_memory, global and other-project scoping, full bodies, history in both directions).

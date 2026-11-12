@@ -60,7 +60,9 @@ memgit cloud login        # on every other machine
 
 Every save goes up in the background and other machines' memories arrive at session start and while you work. The server stores ciphertext only; the passphrase never leaves your machine. Free for 14 days with no card, then $12 a month or $99 a year. The local engine, the store, the MCP server and every command are MIT and never gated, and a lapsed plan never locks your data: it stays on your machine, readable and exportable.
 
-Until a store is connected, memgit may show one line about this, decided on your machine and sent nowhere: when the store reaches 50 and 250 memories, when it is opened on a second machine, and after an export or a backup, each at most once, for example "214 memories are on this machine. memgit cloud signup puts them on your other machines too (14 days free, no card)." Turn it off with `memgit cloud hint off` or `MEMGIT_NO_SYNC_HINT=1`.
+Until a store is connected, memgit may show one line about this, decided on your machine and sent nowhere: when the store reaches 50 and 250 memories, when it is opened on a second machine, and after an export or a backup, each at most once, for example "214 memories are on this machine. memgit cloud signup puts them on your other machines too (14 days free, no card). Setup tips by email: memgit tips <your email>." Turn it off with `memgit cloud hint off` or `MEMGIT_NO_SYNC_HINT=1`.
+
+`memgit tips you@example.com` asks memgit.dev for four short setup emails over ten days. It sends that address and nothing else; memgit.dev emails a confirmation link first, and every tip has a one-click unsubscribe link.
 
 ## Check it yourself
 
@@ -521,6 +523,7 @@ memgit talks to nothing.
 |  | `MEMGIT_NO_AUTOSYNC` | Set to 1/true/yes to stop saves and session starts from syncing to memgit cloud in the background, for this process only. |
 |  | `MEMGIT_AUTOSYNC_MAX_AGE` | Seconds after which a read (search, recall, an MCP lookup) starts a background fetch from memgit cloud (default 300). 0 turns read-triggered fetching off; saves and session starts still sync. |
 |  | `MEMGIT_AUTOSYNC_WAIT` | Seconds a session start waits for the fetch from memgit cloud before rendering the digest (default 3). 0 never waits. |
+|  | `MEMGIT_TIPS_URL` | Where memgit tips posts the address (default https://memgit.dev/api/tips). For tests and self-hosted copies of the site. |
 |  | `MEMGIT_NO_SYNC_HINT` | Set to 1/true/yes to never show the one-line memgit cloud offer in the session digest and after export or backup. The offer is decided from the store alone and sends nothing. |
 | Tuning | `MEMGIT_LOCK_TIMEOUT` | Seconds a writer waits for the store lock before giving up (default 10). |
 |  | `MEMGIT_IDLE_EVICT_SECONDS` | Idle seconds before the MCP server drops its in-memory caches while staying connected (default 900). |

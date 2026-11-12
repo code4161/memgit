@@ -4065,6 +4065,38 @@ def pro_deactivate():
         console.print('[dim]no licence key was stored[/dim]')
 
 
+# ── setup tips by email ───────────────────────────────────────────────────────
+
+TIPS_URL = 'https://memgit.dev/api/tips'
+
+
+@cli.command('tips')
+@click.argument('email')
+def tips_cmd(email):
+    """Get memgit setup tips by email: four short emails over ten days.
+
+    Sends EMAIL to memgit.dev, which emails a confirmation link. Nothing more is
+    sent until you click it, and every tip has a one-click unsubscribe link.
+    """
+    import httpx
+    import os
+    url = os.environ.get('MEMGIT_TIPS_URL', TIPS_URL)
+    try:
+        r = httpx.post(url, json={'email': email, 'source': 'cli'}, timeout=20.0,
+                       headers={'User-Agent': f'memgit-cli/{_version}'})
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        console.print(f'[red]could not reach memgit.dev[/red] ({type(e).__name__}). '
+                      f'You can sign up at https://memgit.dev/tips instead.')
+        raise SystemExit(1)
+    msg = data.get('message') or ('Check your inbox.' if data.get('ok') else 'Please try again.')
+    if data.get('ok'):
+        console.print(f'[green]✓[/green] {msg}')
+    else:
+        console.print(f'[yellow]{msg}[/yellow]')
+        raise SystemExit(1)
+
+
 # ── cloud offer switch ────────────────────────────────────────────────────────
 
 @click.group('hint', invoke_without_command=True)

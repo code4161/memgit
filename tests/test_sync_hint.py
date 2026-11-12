@@ -60,7 +60,7 @@ class TestCountTrigger:
         _fill(repo, 50)
         first = _digest(repo, monkeypatch)
         assert '50 memories are on this machine. memgit cloud signup' in first
-        assert first.rstrip().endswith('(14 days free, no card).')
+        assert '(14 days free, no card). Setup tips by email: memgit tips <your email>.' in first
         assert 'memgit cloud signup' not in _digest(repo, monkeypatch)
 
     def test_two_fifty_shows_after_fifty_has(self, repo):
