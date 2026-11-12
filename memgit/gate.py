@@ -161,6 +161,7 @@ def write_trigger_cache(repo) -> None:
             rows.append({
                 'slug': m.slug,
                 'project': m.project or '',
+                'repo': (m.extra or {}).get('REPO') or '',
                 'priority': m.priority,
                 'type': m.type_code,
                 'rule': (m.rule or '')[:400],
@@ -225,7 +226,12 @@ def matching_rules(rows: list[dict], tool_name: str, tool_input: dict,
                    cwd: str = '', project: Optional[str] = None) -> list[dict]:
     """Cached rows whose triggers match this call, scoped like recall:
     this project's tree plus explicitly-global memories."""
-    from .project import UNKNOWN_PROJECT, project_affinity
+    from .project import UNKNOWN_PROJECT, learn_label_repos, project_affinity
+    # The gate reads only this cache, never the store, so the repository
+    # identities that join two checkouts of one project come from the rows
+    # themselves. Without them a rule saved in ~/code/acme-api never fired in
+    # the same repository at ~/work/acme-api (measured 2026-11-12).
+    learn_label_repos((r.get('project'), r.get('repo')) for r in rows)
     out = []
     for r in rows:
         proj = r.get('project') or ''

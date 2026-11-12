@@ -367,9 +367,13 @@ def core_set(body, rule):
         timestamp=datetime.now(timezone.utc),
         rule=rule, body=body, project=project, priority=2,
     )
-    sha = repo.add(m)
-    console.print(f'[green]staged core[/green]  {m.slug} [{sha[:8]}] '
-                  f'({len(body)} chars) — commit or sync to checkpoint')
+    repo.add(m)
+    # Committed at once, like core heal and core edit. A staged guide was
+    # refused by cloud sync ("not committed") and skipped by autosync, so the
+    # guide never reached another machine (measured 2026-11-12).
+    ck = repo.commit(message=f'core: set {m.slug}', trigger='explicit')
+    console.print(f'[green]saved core[/green]  {m.slug} '
+                  f'({len(body)} chars)' + (f'  [dim]checkpoint {ck[:8]}[/dim]' if ck else ''))
 
 
 @core.command('seed')
@@ -389,10 +393,12 @@ def core_seed(force):
         timestamp=datetime.now(timezone.utc),
         rule='core operating guide', body=body, project=project, priority=2,
     )
-    sha = repo.add(m)
-    console.print(f'[green]staged core[/green]  {m.slug} [{sha[:8]}] '
-                  f'({len(body)} chars) — review with `memgit core show`, '
-                  'refine with `memgit core edit`, then `memgit core sync`')
+    repo.add(m)
+    ck = repo.commit(message=f'core: seed {m.slug}', trigger='explicit')
+    console.print(f'[green]saved core[/green]  {m.slug} ({len(body)} chars)'
+                  + (f'  [dim]checkpoint {ck[:8]}[/dim]' if ck else '')
+                  + ' — review with `memgit core show`, refine with `memgit core edit`, '
+                  'then `memgit core sync`')
 
 
 @core.command('sync')

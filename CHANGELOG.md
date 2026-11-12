@@ -1,12 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.16.0] - 2026-11-12
 
-Read on 2026-11-12 by walking a new account, a teammate, a second machine and a server through memgit cloud against a local API: sync delivered every memory, and the teammate, the second machine and the server could not find any of them.
+Read on 2026-11-12 by walking a new account, a teammate, a second machine and a server through memgit cloud against a local API: sync delivered every memory, and the teammate, the second machine and the server could not find any of them. A second walk then checked every feature across two machines and across a teammate's account: all 26 checks pass (priority and critical rules, the core guide, trackers, supersedes, unverified memories, triggers and the action gate, forget_memory, global and other-project scoping, full bodies, history in both directions).
 
 ### Fixed
 - **The same repository at another path is the same project.** A project label is the folder path, so a teammate at ~/work/acme-api, the same user's second machine at ~/src/api and a server at /srv/acme-api each had their own label, and every default search answered "No results" for memories sitting in their store. Each save inside a git repository now records the repository (normalized remote plus the folder inside the checkout) in the memory's REPO field, and labels that name the same place in the same repository are one project; a folder inside it is family, as with labels. Monorepo folders stay separate and a dotfiles home does not merge its projects. Older versions carry the field through unchanged, and a memory without it serializes exactly as before.
 - **Joining a team links to the team's memory.** Every new account gets a team called "personal", so a teammate who signed up and then joined an invite held two, and memgit cloud link personal/memory linked them to their own empty repo while every sync said "up-to-date". An ambiguous team name is now refused with the choices, a team can be named by its id prefix, memgit cloud signup --invite <link> (and login --invite) joins and links in one command without creating a personal team, memgit cloud team join links a store that is not linked yet, and memgit cloud team invite prints the command for the teammate.
+- **A rule with triggers gates on every machine.** The action gate reads only a cache that a commit rebuilt and a pull did not, and it could not see repository identities, so a synced rule did not refuse the command on the second machine until that machine saved something, and never in a checkout at another path. A pull now rebuilds the cache, and each cached rule carries its repository.
+- **memgit core set and core seed commit the guide.** They used to stage it, after which memgit cloud sync refused to run ("not committed") and autosync left it behind, so the core guide never reached another machine.
 - **No traceback from a cloud command.** A refused request now ends in one line; signing up with an email that already has an account says to log in.
 
 ### Changed

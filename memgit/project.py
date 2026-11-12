@@ -232,6 +232,14 @@ def learn_repos(mnemonics) -> None:
     _learned_repos.update(learned)
 
 
+def learn_label_repos(pairs) -> None:
+    """Add (label, repository) pairs to the learned map, for a caller that holds
+    cached rows rather than the store's memories (the action gate)."""
+    for label, repo in pairs:
+        if label and repo and label != UNKNOWN_PROJECT:
+            _learned_repos.setdefault(normalize_label(label), set()).add(repo)
+
+
 def repos_of(label: Optional[str]) -> set:
     if not label or label == UNKNOWN_PROJECT:
         return set()

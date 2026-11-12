@@ -291,3 +291,36 @@ def test_the_digest_is_quiet_when_sync_is_fine_or_off(tmp_path, state, last):
     repo = Repository.init(tmp_path / 'store')
     _cloud_files(repo, state, last)
     assert 'Cloud sync is failing' not in _format_resume_plain(repo.resume_context())
+
+
+# ── the action gate across checkouts and across a pull ───────────────────────
+
+def test_a_rule_saved_in_one_checkout_gates_the_other(tmp_path):
+    from memgit import gate
+    repo = Repository.init(tmp_path / 'store')
+    alice = checkout(tmp_path, 'code/acme-api')
+    save(repo, alice, 'no-direct-prod-push', 'never push straight to prod', priority=3,
+         triggers=[{'command': r'git push .*prod'}])
+    rows = gate.read_trigger_cache(repo)
+    assert rows and rows[0]['repo'] == 'github.com/acme/api'
+    project._learned_repos.clear()          # a fresh hook process knows nothing yet
+    project._detected_repos.clear()
+    bob = checkout(tmp_path, 'work/acme-api')
+    hits = gate.matching_rules(rows, 'Bash', {'command': 'git push origin prod'},
+                               str(bob), detect_project(bob))
+    assert [r['slug'] for r in hits] == ['no-direct-prod-push']
+    web = checkout(tmp_path, 'work/acme-web', remote='git@github.com:acme/web.git')
+    assert gate.matching_rules(rows, 'Bash', {'command': 'git push origin prod'},
+                               str(web), detect_project(web)) == []
+
+
+def test_core_set_commits_so_sync_can_ship_it(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from memgit.cli import cli
+    store = tmp_path / 'store'
+    repo = Repository.init(store)
+    monkeypatch.setenv('MEMGIT_STORE', str(store))
+    monkeypatch.setenv('MEMGIT_PROJECT', 'acme')
+    r = CliRunner().invoke(cli, ['core', 'set', '-b', 'Run make test before every push.'])
+    assert r.exit_code == 0, r.output
+    assert repo.uncommitted_slugs(repo.current_thread()) == []

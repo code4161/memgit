@@ -1,6 +1,6 @@
 {
   "name": "memgit-mcp",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "mcpName": "dev.memgit/memgit",
   "type": "module",
   "description": "memgit MCP server, run as npx memgit-mcp. One memory for Claude Code, Cursor and Codex on every machine, versioned.",

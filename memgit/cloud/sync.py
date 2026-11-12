@@ -248,6 +248,15 @@ class SyncEngine:
                 self.repo._write_counts(counts)
         if self.repo.memories_dir.exists() and self.repo.current_thread() == thread:
             self.repo.write_flat()
+        if self.repo.current_thread() == thread:
+            # The caches a commit rebuilds must follow a pull too: the action
+            # gate reads only cache/triggers.json, so a rule with triggers that
+            # arrived from another machine did not gate here until this
+            # machine's next local save (measured 2026-11-12).
+            from ..gate import write_trigger_cache
+            from ..links import write_tagmap
+            write_tagmap(self.repo)
+            write_trigger_cache(self.repo)
 
     # ── sync ─────────────────────────────────────────────────────────────────
     def sync(self, thread: str) -> tuple[SyncResult, SyncResult]:

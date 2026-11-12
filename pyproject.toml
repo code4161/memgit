@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memgit"
-version = "0.15.0"
+version = "0.16.0"
 description = "One memory for Claude Code, Cursor, Codex and any MCP host, on every machine: imports Claude Code's own memory, versions every change, syncs end-to-end encrypted"
 readme = "README.md"
 requires-python = ">=3.11"

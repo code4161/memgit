@@ -134,3 +134,16 @@ def test_a_delete_on_one_machine_after_they_agree_reaches_the_other(pair):
     b.repo.commit(message="remove drop")
     b.sync(); a.sync()
     assert a.rules() == b.rules() == {"keep": "stays"}
+
+
+def test_a_pulled_rule_with_triggers_gates_without_a_local_save(pair):
+    """Measured 2026-11-12: the gate reads only cache/triggers.json, which a
+    commit rebuilt and a fast-forward pull did not."""
+    from memgit.gate import read_trigger_cache
+    a, b = pair
+    a.repo.add(Mnemonic(type_code='cn', slug='no-prod-push', timestamp=SAME_MINUTE, priority=3,
+                        rule='never push to prod', triggers=[{'command': 'git push .*prod'}]))
+    a.repo.commit(message='rule')
+    a.sync()
+    b.sync()
+    assert [r['slug'] for r in read_trigger_cache(b.repo)] == ['no-prod-push']
