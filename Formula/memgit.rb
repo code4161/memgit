@@ -3,8 +3,8 @@ class Memgit < Formula
 
   desc "One memory for Claude Code, Cursor and Codex on every machine, versioned"
   homepage "https://memgit.dev"
-  url "https://files.pythonhosted.org/packages/source/m/memgit/memgit-0.15.0.tar.gz"
-  sha256 "ea6bc6af0e382f0f9616f21335d3459fd1223a5521f06098a82cee7d8d9a31d9"
+  url "https://files.pythonhosted.org/packages/source/m/memgit/memgit-0.16.0.tar.gz"
+  sha256 "2de933a0ba6c7ba2c52d130c588c1fde73f511225b20985cad9c6cc169ae2c66"
   license "MIT"
 
   depends_on "python@3.12"
